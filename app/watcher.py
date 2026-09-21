@@ -116,6 +116,11 @@ async def watch_tick(app, checker: LiveChecker | None, now: datetime | None = No
                     result["started"].append(started["session_id"])
             elif holder.session_id and update_metadata(db, holder.session_id, info, now):
                 result["updated"].append(holder.session_id)
+        if settings.TIMELINE_BEATS_ENABLED:
+            from app.llm.base import get_llm
+            from app.summarize.beats import generate_due_beats
+            result["beats"] = await asyncio.to_thread(
+                generate_due_beats, app.state.db_factory, lambda: get_llm("recap"))
         if settings.FINAL_SUMMARY_ENABLED:
             for sid in pending_sessions(db):
                 await asyncio.to_thread(_finalize_one, app.state.db_factory, sid)

@@ -202,6 +202,14 @@ def get_transcript(sid: int, from_: float = 0, to: float = 1e9, limit: int | Non
              "speaker_id": r.speaker_id, "speaker_conf": r.speaker_conf} for r in rows]
 
 
+@router.get("/sessions/{sid}/timeline")
+def get_timeline(sid: int, db: SASession = Depends(get_db)):
+    """Plot-point timeline: hourly beats, plus top events for hours not yet summarized."""
+    from app.summarize.beats import timeline
+    _require_session(db, sid)
+    return timeline(db, sid)
+
+
 @router.get("/sessions/{sid}/events")
 def get_events(sid: int, db: SASession = Depends(get_db)):
     _require_session(db, sid)

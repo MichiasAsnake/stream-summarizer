@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     STREAMLINK_BIN: str = "streamlink"
     # Write an end-of-stream summary for sessions that ended or were interrupted.
     FINAL_SUMMARY_ENABLED: bool = True
+    # Hourly timeline beats (one small LLM call per closed stream hour).
+    TIMELINE_BEATS_ENABLED: bool = True
     DB_URL: str = "sqlite:///data/app.db"
     DATA_DIR: str = "./data"
 

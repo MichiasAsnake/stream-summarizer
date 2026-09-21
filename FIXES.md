@@ -33,7 +33,7 @@ This copy addresses the September 21, 2026 code audit findings.
 ## Verification
 
 - `pip install -e ".[dev]"`: passed
-- `pytest -q`: 100 passed (latest run; see Lore continuity below)
+- `pytest -q`: 106 passed (latest run; see Timeline below)
 - `ruff check app eval tests`: passed
 - Python bytecode compilation: passed
 - Frontend production build: passed
@@ -114,4 +114,16 @@ not installed on the audit machine.
 - Threads: ordered by latest activity; threads untouched for the last 3 sessions are dormant
   and only return when the window mentions them. Thread importance now tracks the biggest
   event attached to it (it was a constant 3).
+
+## Timeline
+
+- New `GET /sessions/{id}/timeline`: one-line plot points with elapsed stream time, grouped
+  by stream hour.
+- When a stream hour closes, one LLM call turns its notable events (importance ≥ 3) into 1–4
+  plain, factual beats stored in the existing `plot_beats` tables. Beats must cite that
+  hour's events or are dropped; `beat_runs` makes each hour exactly-once; quiet hours make no
+  call; failures retry on the next tick. Budget caps apply. `TIMELINE_BEATS_ENABLED` toggles it.
+- The hour in progress shows its top events (importance ≥ 4, max 3) until its beats exist.
+- Times use wall clock since stream start, so worker restarts don't scramble them.
+- The UI has a scrollable Timeline section above the transcript. Summaries are unchanged.
 

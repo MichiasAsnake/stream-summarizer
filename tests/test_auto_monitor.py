@@ -103,7 +103,7 @@ async def test_offline_or_failed_check_starts_nothing(factory, fake_pipeline):
     failed = await watcher.watch_tick(app, FakeChecker(error=RuntimeError("twitch down")))
     assert failed["started"] == [] and "twitch down" in failed["error"]
     assert await watcher.watch_tick(app, None) == {
-        "started": [], "updated": [], "cooldown": [], "finalized": []}
+        "started": [], "updated": [], "cooldown": [], "finalized": [], "beats": 0}
     assert fake_pipeline == []
 
 
