@@ -13,6 +13,8 @@ Implements `twitch-stream-summarizer-v1-design.md` (§1–§14).
 
 ## Quickstart (Mac dev)
 
+Full setup for a real deployment (keys, auto-monitor, verification): `docs/SETUP-MAIN-DEVICE.md`.
+
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
