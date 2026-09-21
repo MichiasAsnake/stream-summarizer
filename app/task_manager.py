@@ -1,5 +1,6 @@
-"""Task manager: tracks running pipeline tasks per session so endpoints can
-launch, stop, and avoid duplicate tasks. Singleton held by the app.
+"""Task manager: tracks this process's running pipeline tasks per session so
+endpoints can stop them. Cross-worker ownership and duplicate prevention live
+in app.leases. Singleton held by the app.
 """
 from __future__ import annotations
 
@@ -50,3 +51,7 @@ class TaskManager:
             except asyncio.CancelledError:
                 pass
         self.remove(sid)
+
+    async def stop_all(self) -> None:
+        for sid in list(self._tasks):
+            await self.stop(sid)

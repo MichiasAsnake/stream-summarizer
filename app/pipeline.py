@@ -555,3 +555,5 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                 enforce_retention(db)
         finally:
             db.close()
+        if bus:
+            await bus.publish("session.status", {"status": final_status})

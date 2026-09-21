@@ -49,48 +49,74 @@ def list_channels(db: SASession = Depends(get_db)):
             for c in db.execute(select(m.Channel)).scalars().all()]
 
 
+def _launch(request: Request, cfg, key: str) -> None:
+    """Start run_session under a lease already acquired for key."""
+    from app.api.routes_sessions import SessionBus
+    from app.leases import run_leased
+    from app.pipeline import run_session
+    tm: TaskManager = request.app.state.task_manager
+    db_factory = request.app.state.db_factory
+    t = asyncio.create_task(run_leased(
+        lambda: run_session(cfg, db_factory=db_factory, bus=SessionBus(cfg.session_id)),
+        key=key, owner=request.app.state.worker_id, db_factory=db_factory))
+    tm.set(cfg.session_id, ManagedTask(task=t, cfg=cfg))
+
+
 @router.post("/channels/{cid}/monitor")
 async def start_monitor(cid: int, request: Request, db: SASession = Depends(get_db)):
-    """Starts the live ingest pipeline as a managed background task (Fix 1)."""
+    """Start the live pipeline. A per-channel database lease guarantees one
+    monitor per channel across concurrent requests and server workers."""
     from app.ingest.supervisor import build_live_cmd
-    from app.pipeline import PipelineConfig, run_session
-    tm: TaskManager = request.app.state.task_manager
-    rows = db.execute(
-        select(m.Session)
-        .where(m.Session.channel_id == cid, m.Session.source == "live")
-        .order_by(m.Session.id.desc()).limit(1)).scalars().all()
-    if rows and tm.has_running(rows[0].id):
-        return {"session_id": rows[0].id, "status": "already-running"}
+    from app.leases import (
+        attach_session,
+        current,
+        live_key,
+        reconcile_orphans,
+        release,
+        try_acquire,
+    )
+    from app.pipeline import PipelineConfig
     ch = db.get(m.Channel, cid)
     if ch is None:
         raise HTTPException(404, "channel not found")
-    now = datetime.now(UTC).isoformat()
-    s = m.Session(channel_id=cid, source="live", status="live", started_at=now)
-    db.add(s)
-    db.commit()
-    db.refresh(s)
-    sid = s.id
-    cfg = PipelineConfig(session_id=sid, channel_id=cid,
-                         cmd=build_live_cmd(ch.twitch_login), reconnect=True)
-    db_factory = request.app.state.db_factory
-    from app.api.routes_sessions import SessionBus
-    t = asyncio.create_task(run_session(
-        cfg, db_factory=db_factory, bus=SessionBus(sid)))
-    tm.set(sid, ManagedTask(task=t, cfg=cfg))
-    return {"session_id": sid, "status": "pipeline-started"}
+    key, owner = live_key(cid), request.app.state.worker_id
+    if not try_acquire(db, key, owner):
+        holder = current(db, key)
+        return {"session_id": holder.session_id if holder else None,
+                "status": "already-running"}
+    try:
+        # We own the channel now, so any older live session left "live" by a
+        # crashed worker is definitively orphaned.
+        reconcile_orphans(db, channel_id=cid, source="live", grace_seconds=0)
+        now = datetime.now(UTC).isoformat()
+        s = m.Session(channel_id=cid, source="live", status="live", started_at=now)
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+        attach_session(db, key, owner, s.id)
+        cfg = PipelineConfig(session_id=s.id, channel_id=cid,
+                             cmd=build_live_cmd(ch.twitch_login), reconnect=True)
+        _launch(request, cfg, key)
+    except Exception:
+        release(db, key, owner)
+        raise
+    return {"session_id": s.id, "status": "pipeline-started"}
 
 
 @router.delete("/channels/{cid}/monitor")
 async def stop_monitor(cid: int, request: Request, db: SASession = Depends(get_db)):
-    """Stops the managed pipeline task for this channel's latest session."""
+    """Stop this channel's live pipeline, whichever worker is running it."""
+    from app.leases import current, live_key, request_stop
     tm: TaskManager = request.app.state.task_manager
-    rows = db.execute(
-        select(m.Session)
-        .where(m.Session.channel_id == cid, m.Session.source == "live")
-        .order_by(m.Session.id.desc()).limit(1)).scalars().all()
-    if rows:
-        await tm.stop(rows[0].id)
-    return {"ok": True}
+    key = live_key(cid)
+    holder = current(db, key)
+    if holder is None:
+        return {"ok": True, "status": "not-running"}
+    if holder.owner == request.app.state.worker_id and holder.session_id is not None:
+        await tm.stop(holder.session_id)
+        return {"ok": True, "status": "stopped", "session_id": holder.session_id}
+    request_stop(db, key)
+    return {"ok": True, "status": "stop-requested", "session_id": holder.session_id}
 
 
 @router.post("/channels/{cid}/replay")
@@ -99,7 +125,7 @@ async def start_replay(cid: int, request: Request, url: str = "", file: str = ""
     """Launch replay pipeline as a managed task (Fix 1)."""
     from app.db import models as _m
     from app.ingest.supervisor import build_replay_cmd
-    from app.pipeline import PipelineConfig, run_session
+    from app.pipeline import PipelineConfig
     if db.get(_m.Channel, cid) is None:
         raise HTTPException(404, "channel not found")
     if bool(url) == bool(file):
@@ -117,7 +143,7 @@ async def start_replay(cid: int, request: Request, url: str = "", file: str = ""
         if not replay_path.is_file():
             raise HTTPException(422, "replay source is not a file")
         source = str(replay_path)
-    tm: TaskManager = request.app.state.task_manager
+    from app.leases import release, session_key, try_acquire
     now = datetime.now(UTC).isoformat()
     s = _m.Session(channel_id=cid, source="replay", status="live",
                    title=url or file, started_at=now)
@@ -125,11 +151,14 @@ async def start_replay(cid: int, request: Request, url: str = "", file: str = ""
     db.commit()
     db.refresh(s)
     sid = s.id
-    cfg = PipelineConfig(session_id=sid, channel_id=cid,
-                         cmd=build_replay_cmd(source), reconnect=False)
-    db_factory = request.app.state.db_factory
-    from app.api.routes_sessions import SessionBus
-    t = asyncio.create_task(run_session(
-        cfg, db_factory=db_factory, bus=SessionBus(sid)))
-    tm.set(sid, ManagedTask(task=t, cfg=cfg))
+    key, owner = session_key(sid), request.app.state.worker_id
+    if not try_acquire(db, key, owner, session_id=sid):
+        raise HTTPException(409, "replay session is already owned")
+    try:
+        cfg = PipelineConfig(session_id=sid, channel_id=cid,
+                             cmd=build_replay_cmd(source), reconnect=False)
+        _launch(request, cfg, key)
+    except Exception:
+        release(db, key, owner)
+        raise
     return {"session_id": sid, "status": "replay-started"}

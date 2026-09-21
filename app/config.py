@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BACKOFF_SECONDS: float = 0.5
 
+    # Pipeline ownership lease: renewed every TTL/3; a crashed worker's
+    # sessions become recoverable once its lease expires.
+    MONITOR_LEASE_TTL_SECONDS: float = 30.0
+
     # Only sufficiently supported model output may mutate canonical memory.
     # Lower-confidence output remains in windows.extraction_json for review.
     MEMORY_ENTITY_MIN_CONFIDENCE: float = 0.65

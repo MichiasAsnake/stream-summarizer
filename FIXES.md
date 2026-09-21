@@ -33,7 +33,7 @@ This copy addresses the September 21, 2026 code audit findings.
 ## Verification
 
 - `pip install -e ".[dev]"`: passed
-- `pytest -q`: 78 passed
+- `pytest -q`: 84 passed (latest run; see Crash recovery below)
 - `ruff check app eval tests`: passed
 - Python bytecode compilation: passed
 - Frontend production build: passed
@@ -60,3 +60,30 @@ not installed on the audit machine.
 - LLM providers use bounded timeouts/retries with Prometheus request and error metrics.
 - Pipeline errors are logged, exposed through session status, and published over SSE where useful.
 - Low-confidence entity, thread, and attribution updates remain auditable but cannot mutate memory.
+
+## Crash recovery and monitor leases
+
+- New `monitor_leases` table: live monitors hold `live:{channel_id}`, replays hold
+  `session:{session_id}`. Acquisition is atomic, so concurrent requests or multiple
+  workers cannot start duplicate monitors for a channel.
+- The owning worker renews its lease every TTL/3. A stop request from any worker is
+  recorded on the lease and honoured at the owner's next heartbeat.
+- On startup, and every lease TTL afterwards, sessions still marked running with no
+  valid lease are closed as `interrupted` with an explanatory `last_error`.
+- Graceful shutdown stops local pipelines so sessions end cleanly and leases are released.
+- Retention now treats `interrupted` sessions like `ended`/`failed` ones.
+- The pipeline publishes a `session.status` SSE event when a session ends.
+
+## Frontend live behavior
+
+- API base is relative (`/api/v1`) with a Vite dev proxy; `VITE_API_BASE` overrides it.
+- New `GET /sessions` endpoint for session discovery; the UI follows the newest running
+  session unless the user picks one, and refreshes the list periodically.
+- The live transcript is backfilled via `GET /sessions/{id}/transcript?limit=200` and then
+  streamed over authenticated SSE (fetch-based, since EventSource cannot send headers),
+  with automatic reconnect and backoff.
+- `summary.updated` events refresh the rolling summary and the NEW badge; polling remains
+  only as a slow fallback.
+- HTTP errors are surfaced in the UI, a 401 re-prompts for the token, and pipeline errors
+  and session `last_error` are shown.
+

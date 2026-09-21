@@ -31,10 +31,25 @@ class Session(Base):
     meta_history: Mapped[str | None] = mapped_column(TEXT)
     started_at: Mapped[str | None] = mapped_column(TEXT)
     ended_at: Mapped[str | None] = mapped_column(TEXT)
-    status: Mapped[str] = mapped_column(TEXT, nullable=False)  # starting|live|degraded|ended|failed
+    status: Mapped[str] = mapped_column(TEXT, nullable=False)  # starting|live|degraded|ended|failed|interrupted
     final_summary: Mapped[str | None] = mapped_column(TEXT)
     last_error: Mapped[str | None] = mapped_column(TEXT)
     last_error_at: Mapped[str | None] = mapped_column(TEXT)
+
+
+class MonitorLease(Base):
+    """Cross-process ownership of a running pipeline.
+
+    key is "live:{channel_id}" for live monitors (one per channel) and
+    "session:{session_id}" for replays. A lease is valid while expires_at
+    (unix seconds) is in the future; the owning worker renews it.
+    """
+    __tablename__ = "monitor_leases"
+    key: Mapped[str] = mapped_column(TEXT, primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(Integer)
+    owner: Mapped[str] = mapped_column(TEXT, nullable=False)
+    expires_at: Mapped[float] = mapped_column(REAL, nullable=False)
+    stop_requested: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class Speaker(Base):

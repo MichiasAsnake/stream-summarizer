@@ -23,6 +23,16 @@ python -m app.db.init_db
 uvicorn app.api.main:app --reload
 ```
 
+Web UI (dev): `cd web && npm ci && npm run dev`, then open http://localhost:5173.
+The UI calls a relative `/api/v1`, which Vite proxies to `http://localhost:8000`
+(override with `VITE_API_PROXY`, or build with `VITE_API_BASE` for a separate API host).
+It lists sessions, follows the newest live one, and streams the transcript live.
+
+Running pipelines hold a lease in the database (`MONITOR_LEASE_TTL_SECONDS`), so
+multiple uvicorn workers never start duplicate monitors for one channel, a stop
+request reaches whichever worker owns the monitor, and sessions left `live` by a
+crashed process are closed as `interrupted` on startup or once the lease expires.
+
 GPU prod: `docker compose -f docker-compose.yml -f deploy/docker-compose.gpu.yml up --build`
 Hosted ASR: `cp deploy/hosted.env .env`, then set `HOSTED_ASR_URL` and
 `HOSTED_ASR_API_KEY` for an OpenAI-compatible transcription endpoint.

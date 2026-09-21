@@ -33,7 +33,7 @@ def enforce_retention(db: SASession, now: datetime | None = None) -> dict[str, i
     retention_days = min(settings.TRANSCRIPT_RETENTION_DAYS, mode_limit)
     cutoff = (now - timedelta(days=max(0, retention_days))).isoformat()
     session_ids = db.execute(select(m.Session.id).where(
-        m.Session.status.in_(("ended", "failed")),
+        m.Session.status.in_(("ended", "failed", "interrupted")),
         m.Session.started_at.is_not(None),
         m.Session.started_at < cutoff,
     )).scalars().all()

@@ -38,6 +38,19 @@ def _require_session(db: SASession, sid: int) -> m.Session:
     return session
 
 
+@router.get("/sessions")
+def list_sessions(limit: int = 50, db: SASession = Depends(get_db)):
+    """Most recent sessions first, for session discovery in the UI."""
+    limit = max(1, min(limit, 200))
+    rows = db.execute(select(m.Session, m.Channel.twitch_login)
+                      .join(m.Channel, m.Channel.id == m.Session.channel_id)
+                      .order_by(m.Session.id.desc()).limit(limit)).all()
+    return [{"id": s.id, "channel_id": s.channel_id, "twitch_login": login,
+             "source": s.source, "status": s.status, "title": s.title,
+             "started_at": s.started_at, "ended_at": s.ended_at,
+             "last_error": s.last_error} for s, login in rows]
+
+
 @router.get("/sessions/{sid}")
 def get_session(sid: int, db: SASession = Depends(get_db)):
     s = _require_session(db, sid)
@@ -171,11 +184,17 @@ def get_feedback(sid: int, db: SASession = Depends(get_db)):
 
 
 @router.get("/sessions/{sid}/transcript")
-def get_transcript(sid: int, from_: float = 0, to: float = 1e9, db: SASession = Depends(get_db)):
+def get_transcript(sid: int, from_: float = 0, to: float = 1e9, limit: int | None = None,
+                   db: SASession = Depends(get_db)):
+    """Segments in time order; limit returns only the latest N."""
     _require_session(db, sid)
-    rows = db.execute(select(m.Segment).where(m.Segment.session_id == sid,
-                                              m.Segment.t_start >= from_, m.Segment.t_start <= to)
-                      .order_by(m.Segment.t_start)).scalars().all()
+    q = select(m.Segment).where(m.Segment.session_id == sid,
+                                m.Segment.t_start >= from_, m.Segment.t_start <= to)
+    if limit is not None:
+        q = q.order_by(m.Segment.t_start.desc(), m.Segment.id.desc()).limit(max(1, limit))
+        rows = list(reversed(db.execute(q).scalars().all()))
+    else:
+        rows = db.execute(q.order_by(m.Segment.t_start)).scalars().all()
     return [{"id": r.id, "t_start": r.t_start, "t_end": r.t_end, "text": r.text,
              "speaker_id": r.speaker_id, "speaker_conf": r.speaker_conf} for r in rows]
 

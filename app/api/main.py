@@ -37,9 +37,14 @@ def _startup():
     ensure_schema()
     app.state.db_factory = SessionLocal
     app.state.task_manager = TaskManager()
+    from app.leases import new_worker_id, reconcile_orphans
+    app.state.worker_id = new_worker_id()
     from app.retention import enforce_retention
     db = SessionLocal()
     try:
+        # Crash recovery: sessions left "live" by a dead process are closed
+        # as interrupted. Sessions of other live workers keep valid leases.
+        reconcile_orphans(db)
         enforce_retention(db)
     finally:
         db.close()
@@ -48,6 +53,40 @@ def _startup():
         import logging
         logging.getLogger("uvicorn").warning(
             "APP_MODE=public: confirm docs/legal-review.md checklist before serving transcripts externally.")
+
+
+async def _reconcile_loop():
+    import asyncio
+    import logging
+
+    from app.leases import reconcile_orphans
+    while True:
+        await asyncio.sleep(settings.MONITOR_LEASE_TTL_SECONDS)
+        db = SessionLocal()
+        try:
+            reconcile_orphans(db)
+        except Exception:
+            logging.getLogger(__name__).exception("orphan reconciliation failed")
+        finally:
+            db.close()
+
+
+@app.on_event("startup")
+async def _start_reconciler():
+    import asyncio
+    app.state.reconciler = asyncio.create_task(_reconcile_loop())
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    # Graceful stop: pipelines close their sessions as "ended" and release
+    # their leases instead of waiting for lease expiry.
+    reconciler = getattr(app.state, "reconciler", None)
+    if reconciler is not None:
+        reconciler.cancel()
+    tm = getattr(app.state, "task_manager", None)
+    if tm is not None:
+        await tm.stop_all()
 
 
 @app.get("/api/v1/mode")
