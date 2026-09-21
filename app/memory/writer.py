@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as SASession
 
 from app.db import models as m
 from app.llm.schemas import Extraction
+from app.memory.context import append_bounded
 from app.memory.resolution import resolve_entity, touch_entity
 
 
@@ -54,7 +55,7 @@ def write_extraction(db: SASession, channel_id: int, session_id: int, window_id:
             pass  # require human click (§5.9); keep open
         else:
             th.status = t.status
-        th.summary = ((th.summary or "") + " " + t.delta).strip()[:2000]
+        th.summary = append_bounded(th.summary, t.delta)
         th.last_updated_at = now
         thread_map[t.ref] = th.id
         MEMORY_UPDATES.labels(kind="thread", outcome="applied").inc()
@@ -71,6 +72,11 @@ def write_extraction(db: SASession, channel_id: int, session_id: int, window_id:
                 candidate = db.get(m.Thread, int(e.thread_ref[1:]))
                 if candidate is not None and candidate.channel_id == channel_id:
                     thread_id = candidate.id
+        if thread_id is not None:
+            # A thread is as important as the biggest event it has carried.
+            th_row = db.get(m.Thread, thread_id)
+            th_row.importance = max(th_row.importance or 0, e.importance or 0)
+            th_row.last_updated_at = now
         ev = m.Event(session_id=session_id, window_id=window_id, t_start=e.t_start, t_end=e.t_end,
                      type=e.type, description=e.description, importance=e.importance, thread_id=thread_id,
                      streamer_role=e.streamer_role or "unknown")

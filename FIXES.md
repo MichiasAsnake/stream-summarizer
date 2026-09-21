@@ -33,7 +33,7 @@ This copy addresses the September 21, 2026 code audit findings.
 ## Verification
 
 - `pip install -e ".[dev]"`: passed
-- `pytest -q`: 93 passed (latest run; see Auto-monitor below)
+- `pytest -q`: 100 passed (latest run; see Lore continuity below)
 - `ruff check app eval tests`: passed
 - Python bytecode compilation: passed
 - Frontend production build: passed
@@ -101,4 +101,17 @@ not installed on the audit machine.
 - Ended and interrupted sessions with events get a `final_summary` (also saved as a `final`
   summary row), generated off the shutdown path with up to 3 attempts and budget checks.
 - The UI shows stream title/category and the wrap-up for finished sessions.
+
+## Lore continuity quick wins
+
+- Entity descriptions and thread summaries no longer drop new information at 2,000 chars:
+  they keep the original head plus the newest tail, and prompts show head + latest state.
+- Extraction context now includes "previously on" (final summaries of the last 2 finished
+  sessions), plus this session's last 3 window summaries and current rolling summary (these
+  slots existed but were never filled).
+- Cast selection: streamer first, then entities named in the current window (name or alias),
+  then most recently seen. Merged entities are excluded.
+- Threads: ordered by latest activity; threads untouched for the last 3 sessions are dormant
+  and only return when the window mentions them. Thread importance now tracks the biggest
+  event attached to it (it was a constant 3).
 

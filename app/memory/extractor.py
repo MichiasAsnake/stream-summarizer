@@ -64,7 +64,8 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
     except Exception:
         system = prompts.EXTRACTION_SYSTEM
     ctx = build_context(db, channel_id, session_id,
-                        [u.get("speaker", "?") for u in utterances])
+                        [u.get("speaker", "?") for u in utterances],
+                        window_text=" ".join(u.get("text", "") for u in utterances))
     prompt = f"<context>\n{ctx}\n</context>\n<transcript>\n{format_utterances(utterances)}\n</transcript>"
     schema = Extraction.model_json_schema()
     t0 = time.time()

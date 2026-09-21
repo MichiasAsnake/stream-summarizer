@@ -65,7 +65,8 @@ def touch_entity(db: SASession, ent: m.Entity, delta: str = "") -> None:
     ent.mention_count += 1
     ent.last_seen_at = datetime.now(UTC).isoformat()
     if delta:
-        ent.description = ((ent.description or "") + " " + delta).strip()[:2000]
+        from app.memory.context import append_bounded
+        ent.description = append_bounded(ent.description, delta)
     # promote provisional -> confirmed after >=2 windows (§5.9)
     if ent.status == "provisional" and ent.mention_count >= 2:
         ent.status = "confirmed"
