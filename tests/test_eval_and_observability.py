@@ -87,6 +87,9 @@ async def test_eval_runner_exercises_full_pipeline_in_isolated_db(monkeypatch, t
     monkeypatch.setattr(settings, "ASR_BACKEND", "stub")
     monkeypatch.setattr(settings, "SPK_EMBED_MODEL", "stub")
     monkeypatch.setattr(settings, "LLM_PROVIDER", "stub")
+    # Hermetic: live Jev triage would idle-skip the stub transcript via a
+    # network call; a non-Jev classifier makes triage fail open (full path).
+    monkeypatch.setattr(settings, "CLASSIFIER", "llm")
 
     result = await runner.replay_file(
         str(source), gold={"transcript": "word0", "summary_facts": ["Stub summary"]})

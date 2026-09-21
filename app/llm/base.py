@@ -68,12 +68,17 @@ class GeminiLLM:
         from app.observability import call_llm
         c = self._client()
         stage = "recap" if self.stage == "recap" else "rolling"
+        # Short-form summaries must not spend the token budget on thinking:
+        # a reasoning model otherwise burns max_output_tokens on thought
+        # tokens and truncates to a fragment (observed: "Timeframe", "Scope").
+        thinking_off = types.ThinkingConfig(thinking_budget=0)
         resp = call_llm(
             stage,
             lambda: c.models.generate_content(
                 model=self.model,
                 contents=f"{system}\n\n{prompt}",
-                config=types.GenerateContentConfig(max_output_tokens=max_tokens)))
+                config=types.GenerateContentConfig(
+                    max_output_tokens=max_tokens, thinking_config=thinking_off)))
         return resp.text or ""
 
 
