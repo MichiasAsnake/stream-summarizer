@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 
 const API = "http://localhost:8000/api/v1";
-const TOKEN = "dev-token-change-me";
+const TOKEN_KEY = "stream-summary-token";
+const TOKEN = sessionStorage.getItem(TOKEN_KEY) || window.prompt("API bearer token") || "";
+if (TOKEN) sessionStorage.setItem(TOKEN_KEY, TOKEN);
 const H = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };
 
 const clean = (t: string) => t.replaceAll("**", "");

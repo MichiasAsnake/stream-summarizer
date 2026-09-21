@@ -8,7 +8,7 @@ from app.pipeline import reconcile_unobserved_gap
 
 
 def test_emit_gap_appends_and_fires():
-    sup = IngestSupervisor("cmd", on_gap=None)
+    sup = IngestSupervisor(("cmd",), on_gap=None)
     seen = []
     sup.on_gap = seen.append
     g = sup._emit_gap(1.0, 2.0, "reconnect")
@@ -20,7 +20,7 @@ def test_emit_gap_appends_and_fires():
 def test_emit_gap_callback_exception_swallowed():
     def bad(g):
         raise RuntimeError("db down")
-    sup = IngestSupervisor("cmd", on_gap=bad)
+    sup = IngestSupervisor(("cmd",), on_gap=bad)
     g = sup._emit_gap(0, 0, "exit")
     assert sup.gaps == [g]  # still recorded; drain retries
 

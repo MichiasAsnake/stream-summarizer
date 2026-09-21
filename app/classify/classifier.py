@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 
 from app.interfaces import Candidates, RoutingResult
 
-
 IMPORTANCE_LEVELS = [
     "1 - Idle banter: filler words, reactions like yeah or mm-hmm, background chatter with no new information.",
     "2 - Minor: routine logistics, small talk naming places or people, restating known facts.",
@@ -96,7 +95,7 @@ def build_triage_questions() -> dict:
         },
         "novelty": {
             "type": "score",
-            "instructions": "Does this window introduce anything not already established?",
+            "instructions": "Compared with [known_people] and [open_storylines], does this window introduce anything not already established?",
             "criteria": [
                 "1 - Nothing new: rehash, filler, or repetition of known facts.",
                 "2 - Mostly familiar with one small new detail.",
@@ -105,7 +104,7 @@ def build_triage_questions() -> dict:
         },
         "new_character": {
             "type": "noul",
-            "instructions": "This window introduces a new person not in the known list.",
+            "instructions": "This window introduces a new person not listed in [known_people].",
             "criteria": {
                 "true": "A person is named, introduced, or speaks who was not known before.",
                 "false": "Everyone mentioned or speaking is already known, or no person features at all.",
@@ -113,13 +112,38 @@ def build_triage_questions() -> dict:
         },
         "has_storyline": {
             "type": "noul",
-            "instructions": "This window advances an ongoing storyline rather than standalone chatter.",
+            "instructions": "This window advances a storyline listed in [open_storylines] rather than standalone chatter.",
             "criteria": {
                 "true": "It continues, escalates, or resolves an ongoing plot such as a job, charges, a plan, or a conflict.",
                 "false": "Standalone banter, routine logistics, or background noise with no plot thread.",
             },
         },
     }
+
+
+def build_triage_state(state: str, known_characters: list[dict] | None = None,
+                       open_threads: list[dict] | None = None) -> str:
+    """Give novelty questions the reference set they require.
+
+    ``None`` means the caller could not provide context; an empty list means
+    the memory currently has no known records. The transcript remains clearly
+    delimited from the reference data.
+    """
+    if known_characters is None:
+        people = "context unavailable"
+    else:
+        people = "\n".join(
+            f"- {c.get('name', '?')}: {c.get('desc', '')}" for c in known_characters
+        ) or "(none known yet)"
+    if open_threads is None:
+        threads = "context unavailable"
+    else:
+        threads = "\n".join(
+            f"- {t.get('title', '?')}: {t.get('summary', '')}" for t in open_threads
+        ) or "(none open yet)"
+    return (f"[known_people]\n{people}\n[/known_people]\n"
+            f"[open_storylines]\n{threads}\n[/open_storylines]\n"
+            f"[transcript]\n{state}\n[/transcript]")
 
 
 class LlmClassifier:
@@ -173,8 +197,9 @@ class JevClassifier:
     def _post(self, payload: dict) -> dict:
         """POST with one retry on 429 (honoring retry-after) and one on
         transport errors. Other errors propagate so callers can fail open."""
-        import httpx
         import time
+
+        import httpx
         last_exc = None
         for attempt in range(2):
             try:
@@ -219,9 +244,11 @@ class JevClassifier:
         self._require_key()
         return self._post({"model": self.model, "state": state, "questions": questions})
 
-    def triage(self, state: str) -> TriageVerdict:
+    def triage(self, state: str, known_characters: list[dict] | None = None,
+               open_threads: list[dict] | None = None) -> TriageVerdict:
         """Structured triage verdict for one window of transcript."""
-        data = self.ask(state, build_triage_questions())
+        triage_state = build_triage_state(state, known_characters, open_threads)
+        data = self.ask(triage_state, build_triage_questions())
         answers = data.get("answers", {})
 
         def _score(key: str) -> tuple[float | None, float]:

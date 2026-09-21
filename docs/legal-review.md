@@ -3,11 +3,11 @@
 ## Status: private-tool default (APP_MODE=private)
 - [ ] Twitch ToS: streamlink audio capture is grey-area. Prototype privately OK; confirm sanctioned path before product launch.
 - [ ] Voice prints = biometric data (BIPA/GDPR). Consent flow (app/consent.py + consents table) enforced; deletion endpoint real.
-- [ ] Unknown-speaker clips: TTL enforced (UNKNOWN_CLIP_TTL_HOURS); no searchable voice DB of non-consenting people.
+- [x] Unknown voices remain memory-only; no clips or searchable voiceprints are persisted without consent.
 - [ ] Content rights: transcript retention policy (TRANSCRIPT_RETENTION_DAYS); decide display policy for game/music content.
 - [ ] Attribution errors: confidence surfaced in UI; corrections logged.
 
 ## To flip to APP_MODE=public, all boxes above must be checked, plus:
-- [ ] Short retention defaults applied (30d transcripts / 24h clips per app/mode.py)
+- [x] Public-mode transcript retention is capped at 30 days; no unknown-speaker clips are stored.
 - [ ] Auth upgrade scoped (V1 static bearer is NOT multi-tenant)
 - [ ] Abuse/contact path + takedown for transcripts/clips

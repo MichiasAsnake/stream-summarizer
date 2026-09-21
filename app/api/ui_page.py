@@ -51,7 +51,9 @@ body{font-family:"Geist",system-ui,-apple-system,sans-serif;background:#101216;c
 </div>
 <button id="showbar">Show summary</button>
     <script>
-const SID=1,TOK="dev-token-change-me";
+const SID=1;
+let TOK=sessionStorage.getItem("stream-summary-token")||"";
+if(!TOK){TOK=window.prompt("API bearer token")||"";if(TOK)sessionStorage.setItem("stream-summary-token",TOK);}
 const clean=t=>(t||"").replaceAll("**","");
 let displayed="";
 let rolling="";
@@ -90,8 +92,9 @@ def ui(request: Request):
     except (TypeError, ValueError):
         sid = None
     if sid is None:
-        from app.db import models as m
         from sqlalchemy import select as _s2
+
+        from app.db import models as m
         db = request.app.state.db_factory()
         try:
             active = db.execute(

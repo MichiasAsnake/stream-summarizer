@@ -18,29 +18,35 @@ class ManagedTask:
 class TaskManager:
     """One entry per active session_id. Accessed by monitor/replay endpoints."""
 
-    _tasks: dict[int, ManagedTask] = {}
+    def __init__(self) -> None:
+        self._tasks: dict[int, ManagedTask] = {}
 
-    @classmethod
-    def get(cls, sid: int) -> ManagedTask | None:
-        return cls._tasks.get(sid)
+    def get(self, sid: int) -> ManagedTask | None:
+        return self._tasks.get(sid)
 
-    @classmethod
-    def set(cls, sid: int, mt: ManagedTask) -> None:
-        cls._tasks[sid] = mt
+    def set(self, sid: int, mt: ManagedTask) -> None:
+        self._tasks[sid] = mt
+        mt.task.add_done_callback(lambda task: self._finished(sid, task))
 
-    @classmethod
-    def remove(cls, sid: int) -> None:
-        cls._tasks.pop(sid, None)
+    def _finished(self, sid: int, task: asyncio.Task) -> None:
+        mt = self._tasks.pop(sid, None)
+        if mt is not None and not task.cancelled() and task.exception() is not None:
+            mt.status = "failed"
 
-    @classmethod
-    def has_running(cls, sid: int) -> bool:
-        mt = cls._tasks.get(sid)
+    def remove(self, sid: int) -> None:
+        self._tasks.pop(sid, None)
+
+    def has_running(self, sid: int) -> bool:
+        mt = self._tasks.get(sid)
         return mt is not None and mt.status == "running" and not mt.task.done()
 
-    @classmethod
-    def stop(cls, sid: int) -> None:
-        mt = cls._tasks.get(sid)
+    async def stop(self, sid: int) -> None:
+        mt = self._tasks.get(sid)
         if mt and not mt.task.done():
             mt.status = "stopped"
             mt.task.cancel()
-            mt.task.add_done_callback(lambda t: cls.remove(sid))
+            try:
+                await mt.task
+            except asyncio.CancelledError:
+                pass
+        self.remove(sid)

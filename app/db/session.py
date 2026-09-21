@@ -43,6 +43,12 @@ def ensure_schema(url_or_engine=None) -> None:
             ("windows", "boot_epoch", "ALTER TABLE windows ADD COLUMN boot_epoch INTEGER"),
             ("ingest_gaps", "boot_epoch", "ALTER TABLE ingest_gaps ADD COLUMN boot_epoch INTEGER"),
             ("events", "streamer_role", "ALTER TABLE events ADD COLUMN streamer_role TEXT"),
+            ("summaries", "cache_key", "ALTER TABLE summaries ADD COLUMN cache_key TEXT"),
+            ("summaries", "tokens_in", "ALTER TABLE summaries ADD COLUMN tokens_in INTEGER"),
+            ("summaries", "tokens_out", "ALTER TABLE summaries ADD COLUMN tokens_out INTEGER"),
+            ("summaries", "cost_usd", "ALTER TABLE summaries ADD COLUMN cost_usd REAL"),
+            ("sessions", "last_error", "ALTER TABLE sessions ADD COLUMN last_error TEXT"),
+            ("sessions", "last_error_at", "ALTER TABLE sessions ADD COLUMN last_error_at TEXT"),
         ):
             cols = [r[1] for r in conn.execute(_text(f"PRAGMA table_info({table})")).fetchall()]
             if column not in cols:

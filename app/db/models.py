@@ -33,6 +33,8 @@ class Session(Base):
     ended_at: Mapped[str | None] = mapped_column(TEXT)
     status: Mapped[str] = mapped_column(TEXT, nullable=False)  # starting|live|degraded|ended|failed
     final_summary: Mapped[str | None] = mapped_column(TEXT)
+    last_error: Mapped[str | None] = mapped_column(TEXT)
+    last_error_at: Mapped[str | None] = mapped_column(TEXT)
 
 
 class Speaker(Base):
@@ -150,7 +152,7 @@ class Event(Base):
     importance: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     thread_id: Mapped[int | None] = mapped_column(ForeignKey("threads.id"))
     # Per-event streamer involvement (2.5b, log-only): actor|target|witness|
-    # informed|ambient|offscreen. NULL = pre-role era (see gold set, no backfill).
+    # informed|ambient|offscreen|unknown. NULL = pre-role era (see gold set, no backfill).
     # Added via ALTER TABLE on existing DBs (see app.db.session.ensure_schema).
     streamer_role: Mapped[str | None] = mapped_column(TEXT, default=None)
 
@@ -180,6 +182,9 @@ class Summary(Base):
     covers_t_end: Mapped[float | None] = mapped_column(REAL)
     text: Mapped[str] = mapped_column(TEXT, nullable=False)
     model: Mapped[str | None] = mapped_column(TEXT)
+    tokens_in: Mapped[int | None] = mapped_column(Integer)
+    tokens_out: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[float | None] = mapped_column(REAL)
     created_at: Mapped[str] = mapped_column(TEXT, nullable=False)
     # Recap cache: "max_event_id:max_window_id:max_thread_updated_at" snapshot.
     # Added via ALTER TABLE on existing DBs (see routes_sessions.get_recap).

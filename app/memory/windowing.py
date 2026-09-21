@@ -14,6 +14,7 @@ class Utterance:
     text: str
     words: int = 0
     speaker: str = ""
+    speaker_conf: float | None = None
 
 
 @dataclass
@@ -40,13 +41,32 @@ class WindowBuilder:
             return None
         prev = self.buf[-1]
         gap = u.t_start - prev.t_end
+        prior_elapsed = prev.t_end - self.buf[0].t_start
         elapsed = u.t_end - self.buf[0].t_start
         new_words = self.words + (u.words or len(u.text.split()))
+
+        # A long silence belongs between windows. Close the existing window
+        # before adding the first utterance after the gap.
+        if prior_elapsed >= self.min_s and gap >= self.min_silence:
+            w = Window(utterances=self.buf, t_start=self.buf[0].t_start,
+                       t_end=self.buf[-1].t_end)
+            self.buf = [u]
+            self.words = u.words or len(u.text.split())
+            return w
+
+        # Do not make an existing window exceed a hard limit just because the
+        # next utterance crosses it. Carry that utterance into the next window.
+        if elapsed > self.max_s or new_words > self.max_words:
+            w = Window(utterances=self.buf, t_start=self.buf[0].t_start,
+                       t_end=self.buf[-1].t_end)
+            self.buf = [u]
+            self.words = u.words or len(u.text.split())
+            return w
+
         self.buf.append(u)
         self.words = new_words
         close = (
-            (elapsed >= self.min_s and gap >= self.min_silence)
-            or elapsed >= self.max_s
+            elapsed >= self.max_s
             or new_words >= self.max_words
         )
         if close:

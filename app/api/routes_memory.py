@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -17,7 +17,7 @@ router = APIRouter()
 def _log(db: SASession, ttype: str, tid: int, before: dict, after: dict):
     db.add(m.Correction(target_type=ttype, target_id=tid, before_json=json.dumps(before),
                         after_json=json.dumps(after),
-                        created_at=datetime.now(timezone.utc).isoformat()))
+                        created_at=datetime.now(UTC).isoformat()))
 
 
 @router.get("/channels/{cid}/entities")
@@ -36,6 +36,8 @@ def list_threads(cid: int, db: SASession = Depends(get_db)):
 def patch_entity(eid: int, canonical_name: str | None = None, description: str | None = None,
                  db: SASession = Depends(get_db)):
     e = db.get(m.Entity, eid)
+    if e is None:
+        raise HTTPException(404, "entity not found")
     before = {"name": e.canonical_name, "description": e.description}
     if canonical_name:
         e.canonical_name = canonical_name
@@ -48,7 +50,12 @@ def patch_entity(eid: int, canonical_name: str | None = None, description: str |
 
 @router.post("/entities/merge")
 def merge_entities(into_id: int, from_id: int, db: SASession = Depends(get_db)):
+    into = db.get(m.Entity, into_id)
     f = db.get(m.Entity, from_id)
+    if into is None or f is None:
+        raise HTTPException(404, "entity not found")
+    if into.id == f.id or into.channel_id != f.channel_id:
+        raise HTTPException(422, "entities must be distinct and belong to the same channel")
     before = {"status": f.status, "merged_into": f.merged_into}
     f.status = "merged"
     f.merged_into = into_id
@@ -62,19 +69,22 @@ def merge_suggestions(cid: int, db: SASession = Depends(get_db)):
     """Review-only entity merge suggestions via Jev Noul adjudication.
     Applying still goes through POST /entities/merge."""
     import httpx
+
     from app.memory.merge import suggest_merges
     try:
         return {"suggestions": suggest_merges(db, cid)}
     except RuntimeError as e:
-        raise HTTPException(503, str(e))
+        raise HTTPException(503, str(e)) from e
     except httpx.HTTPError as e:
-        raise HTTPException(503, f"jev request failed: {type(e).__name__}")
+        raise HTTPException(503, f"jev request failed: {type(e).__name__}") from e
 
 
 @router.patch("/threads/{tid}")
 def patch_thread(tid: int, status: str | None = None, title: str | None = None,
                  db: SASession = Depends(get_db)):
     t = db.get(m.Thread, tid)
+    if t is None:
+        raise HTTPException(404, "thread not found")
     before = {"status": t.status, "title": t.title}
     if status:
         t.status = status

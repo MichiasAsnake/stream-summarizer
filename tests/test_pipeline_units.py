@@ -1,7 +1,8 @@
+import numpy as np
+
 from app.asr.guards import should_drop
 from app.llm.schemas import Extraction
-from app.speakers.embedder import cosine, match_speaker
-import numpy as np
+from app.speakers.embedder import match_speaker
 
 
 def test_guards_blocklist():

@@ -1,4 +1,9 @@
-from app.classify.classifier import JevClassifier, TriageVerdict, build_triage_questions
+from app.classify.classifier import (
+    JevClassifier,
+    TriageVerdict,
+    build_triage_questions,
+    build_triage_state,
+)
 from app.pipeline import should_skip_window, triage_window
 
 
@@ -30,6 +35,31 @@ def test_triage_questions_shape():
     for key in ("new_character", "has_storyline"):
         assert qs[key]["type"] == "noul"
         assert set(qs[key]["criteria"]) == {"true", "false"}
+
+
+def test_triage_state_includes_known_memory_and_delimits_transcript():
+    state = build_triage_state(
+        "Alex appears",
+        [{"name": "Sam", "desc": "the mechanic"}],
+        [{"title": "Car repair", "summary": "Sam needs a part"}],
+    )
+    assert "[known_people]\n- Sam: the mechanic" in state
+    assert "[open_storylines]\n- Car repair: Sam needs a part" in state
+    assert "[transcript]\nAlex appears\n[/transcript]" in state
+
+
+def test_jev_triage_sends_known_context(monkeypatch):
+    clf = JevClassifier(api_key="x", base_url="http://x", model="m")
+    seen = {}
+
+    def fake_ask(state, questions):
+        seen["state"] = state
+        return {"model": "m", "answers": {}}
+
+    monkeypatch.setattr(clf, "ask", fake_ask)
+    clf.triage("Alex arrives", known_characters=[{"name": "Sam"}], open_threads=[])
+    assert "- Sam:" in seen["state"]
+    assert "[transcript]\nAlex arrives" in seen["state"]
 
 
 def _clf_with_verdict(monkeypatch, verdict: TriageVerdict):

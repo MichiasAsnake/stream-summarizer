@@ -12,7 +12,7 @@ def approx_tokens(s: str) -> int:
 
 
 def build_context(db: SASession, channel_id: int, session_id: int,
-                  window_utterances: list[str], speaker_labels: list[str],
+                  speaker_labels: list[str],
                   rolling: str = "", recent_windows: list[str] | None = None) -> str:
     recent_windows = recent_windows or []
     parts: list[str] = []
@@ -29,12 +29,13 @@ def build_context(db: SASession, channel_id: int, session_id: int,
         parts.append(f"[streamer] {_st['name']} (entity E{_st.get('entity_id')})"
                      f" aka {', '.join(_st.get('aliases') or [])}"
                      f" | character: {_chars} | POV: {_st.get('pov_mode')}"
-                     f" — tell events from his perspective")
+                     " — use as the viewing anchor; state their role only when supported")
     except Exception:
         pass
     # Cast: top 12 by recency x mentions (approx: mention_count desc, last_seen desc)
     cast = db.execute(select(m.Entity).where(m.Entity.channel_id == channel_id)
-                      .order_by(m.Entity.mention_count.desc()).limit(12)).scalars().all()
+                      .order_by(m.Entity.mention_count.desc(),
+                                m.Entity.last_seen_at.desc()).limit(12)).scalars().all()
     for e in cast:
         aliases = db.execute(select(m.EntityAlias.alias).where(
             m.EntityAlias.entity_id == e.id)).scalars().all()

@@ -5,7 +5,6 @@ from app.db import models as m
 from app.db.models import Base
 from app.memory import streamer as st
 
-
 STREAMER_CFG = {
     "name": "X",
     "entity_id": 5,
@@ -28,7 +27,6 @@ def _db(config=None):
 
 
 def test_config_parses():
-    import json
     db = _db({"streamer": STREAMER_CFG})
     got = st.get_streamer(db, 2)
     assert got["name"] == "X"

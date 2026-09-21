@@ -22,24 +22,24 @@ def _db():
 
 
 def test_normalize_valid_roles_kept():
-    for r in ("actor", "target", "witness", "informed", "ambient", "offscreen"):
+    for r in ("actor", "target", "witness", "informed", "ambient", "offscreen", "unknown"):
         assert normalize_streamer_role(r) == r
 
 
-def test_normalize_invalid_to_ambient():
-    assert normalize_streamer_role("protagonist") == "ambient"
-    assert normalize_streamer_role("") == "ambient"
-    assert normalize_streamer_role(None) == "ambient"
+def test_normalize_invalid_to_unknown():
+    assert normalize_streamer_role("protagonist") == "unknown"
+    assert normalize_streamer_role("") == "unknown"
+    assert normalize_streamer_role(None) == "unknown"
     assert normalize_streamer_role(" Actor ") == "actor"
 
 
 def test_event_out_never_fails_on_role():
     e = EventOut.model_validate({"t_start": 0, "t_end": 1, "type": "banter",
                                  "description": "x", "streamer_role": "hero"})
-    assert e.streamer_role == "ambient"
+    assert e.streamer_role == "unknown"
     e2 = EventOut.model_validate({"t_start": 0, "t_end": 1, "type": "banter",
                                   "description": "x"})
-    assert e2.streamer_role == "ambient"
+    assert e2.streamer_role == "unknown"
 
 
 def test_writer_persists_role():
@@ -48,14 +48,14 @@ def test_writer_persists_role():
     ext = Extraction.model_validate({
         "events": [
             {"t_start": 0, "t_end": 1, "type": "dialogue", "description": "he acts",
-             "streamer_role": "actor"},
+             "streamer_role": "actor", "confidence": 0.9},
             {"t_start": 1, "t_end": 2, "type": "banter", "description": "bg",
-             "streamer_role": "bogus"},
+             "streamer_role": "bogus", "confidence": 0.9},
         ]})
     write_extraction(db, 2, 1, 1, ext)
     roles = sorted(r[0] for r in db.execute(
         __import__("sqlalchemy").select(m.Event.streamer_role)).fetchall())
-    assert roles == ["actor", "ambient"]
+    assert roles == ["actor", "unknown"]
 
 
 def test_migration_adds_column(tmp_path):
@@ -70,5 +70,7 @@ def test_migration_adds_column(tmp_path):
     ensure_schema(f"sqlite:///{p}")
     con = sqlite3.connect(p)
     cols = [r[1] for r in con.execute("PRAGMA table_info(events)").fetchall()]
+    session_cols = [r[1] for r in con.execute("PRAGMA table_info(sessions)").fetchall()]
     con.close()
     assert "streamer_role" in cols
+    assert {"last_error", "last_error_at"}.issubset(session_cols)

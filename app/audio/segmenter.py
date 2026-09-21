@@ -29,7 +29,9 @@ class Segmenter:
         self.use_silero = use_silero
         self._vad = None
         self._buf: list[np.ndarray] = []
-        self._silence_frames = 0
+        self._buf_start: float | None = None
+        self._silence_samples = 0
+        self._speech_seen = False
         try:
             if use_silero:
                 import torch  # type: ignore
@@ -56,20 +58,24 @@ class Segmenter:
         """
         if len(pcm) == 0:
             return []
+        if not self._buf:
+            self._buf_start = t_offset
         self._buf.append(pcm)
         out: list[VadSegment] = []
         while self._buf:
             combined = np.concatenate(self._buf)
             dur = len(combined) / self.sr
-            # Check speech in the trailing portion to detect silence properly
-            check = combined[-int(self.sr * 1):] if len(combined) > self.sr else combined
-            speech = self._silero_speech(check)
-            if not speech:
-                self._silence_frames += len(check)
+            # Classify only the newly arrived samples. Reclassifying an
+            # overlapping trailing window double-counts silence and shifts
+            # boundaries earlier on every call.
+            speech = self._silero_speech(pcm)
+            if speech:
+                self._speech_seen = True
+                self._silence_samples = 0
             else:
-                self._silence_frames = 0
+                self._silence_samples += len(pcm)
             # Close on >=500ms silence and total dur >= 0.3s; hard-cap at 30s
-            if (self._silence_frames >= self.silence_ms / 1000 * self.sr
+            if (self._silence_samples >= self.silence_ms / 1000 * self.sr
                     and dur >= 0.3) or dur >= 30.0:
                 # Cut at lowest-energy point in last 5s if over 30s
                 cut = len(combined)
@@ -85,24 +91,19 @@ class Segmenter:
                             best = i
                     cut = len(combined) - len(tail) + best
                 seg_pcm = combined[:cut]
-                t_end = t_offset + len(seg_pcm) / self.sr
-                if t_end - t_offset >= 0.3:
-                    out.append(VadSegment(t_offset, t_end, seg_pcm))
-                    remaining = combined[cut:]
-                    self._buf = [remaining] if len(remaining) > 0 else []
-                    t_offset = t_end
-                    if len(self._buf) == 0:
-                        break
-                    continue
-                else:
-                    self._buf = []
+                seg_start = self._buf_start if self._buf_start is not None else t_offset
+                t_end = seg_start + len(seg_pcm) / self.sr
+                remaining = combined[cut:]
+                if self._speech_seen and t_end - seg_start >= 0.3:
+                    out.append(VadSegment(seg_start, t_end, seg_pcm))
+                self._buf = [remaining] if len(remaining) > 0 else []
+                self._buf_start = t_end if len(remaining) > 0 else None
+                self._silence_samples = len(remaining)
+                self._speech_seen = (len(remaining) > 0
+                                     and self._is_speech_energy(remaining))
+                if len(self._buf) == 0:
                     break
-            if dur >= 30.0:
-                seg_pcm = combined
-                t_end = t_offset + len(seg_pcm) / self.sr
-                out.append(VadSegment(t_offset, t_end, seg_pcm))
-                self._buf = []
-                break
+                continue
             # Not enough info yet; keep accumulating
             break
         return out
@@ -112,10 +113,14 @@ class Segmenter:
         out: list[VadSegment] = []
         if self._buf:
             combined = np.concatenate(self._buf)
-            t_end = t_offset + len(combined) / self.sr
-            if t_end - t_offset >= 0.3:
-                out.append(VadSegment(t_offset, t_end, combined))
+            start = self._buf_start if self._buf_start is not None else t_offset
+            t_end = start + len(combined) / self.sr
+            if self._speech_seen and t_end - start >= 0.3:
+                out.append(VadSegment(start, t_end, combined))
             self._buf = []
+            self._buf_start = None
+            self._silence_samples = 0
+            self._speech_seen = False
         return out
 
 

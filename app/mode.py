@@ -19,8 +19,10 @@ def is_public(mode: str) -> bool:
 
 def retention_defaults(mode: str) -> dict:
     if is_public(mode):
-        return {"transcript_days": 30, "audio_clip_hours": 24, "embedding_requires_consent": True}
-    return {"transcript_days": 365, "audio_clip_hours": 72, "embedding_requires_consent": True}
+        return {"transcript_days": 30, "unknown_voice_storage": "memory_only",
+                "embedding_requires_consent": True}
+    return {"transcript_days": 365, "unknown_voice_storage": "memory_only",
+            "embedding_requires_consent": True}
 
 
 PUBLIC_LAUNCH_CHECKLIST = [

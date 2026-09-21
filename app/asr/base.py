@@ -18,5 +18,7 @@ def get_transcriber():
     if backend == "hosted":
         from app.asr.hosted import HostedTranscriber
         return HostedTranscriber()
-    from app.asr.stub import StubTranscriber
-    return StubTranscriber()
+    if backend == "stub":
+        from app.asr.stub import StubTranscriber
+        return StubTranscriber()
+    raise ValueError(f"unsupported ASR_BACKEND: {backend}")

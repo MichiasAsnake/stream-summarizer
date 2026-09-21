@@ -8,7 +8,9 @@ Fixes from audit:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC
 
 import numpy as np
 
@@ -25,7 +27,8 @@ from app.speakers.embedder import get_embedder
 class PipelineConfig:
     session_id: int
     channel_id: int
-    cmd: str
+    cmd: Sequence[str]
+    reconnect: bool = True
 
 
 def should_skip_window(importance: int | None, new_character: bool,
@@ -40,7 +43,8 @@ def should_skip_window(importance: int | None, new_character: bool,
     return imp <= 2 and conf >= 0.6 and not new_character
 
 
-def triage_window(text: str) -> tuple[bool, int | None, float, bool, str]:
+def triage_window(text: str, known_characters: list[dict] | None = None,
+                  open_threads: list[dict] | None = None) -> tuple[bool, int | None, float, bool, str]:
     """Jev triage gate: (idle, importance, confidence, new_character, model).
 
     Single fan-out call (importance + atomic signals, no candidates) meant
@@ -48,11 +52,13 @@ def triage_window(text: str) -> tuple[bool, int | None, float, bool, str]:
     any error or non-Jev classifier returns idle=False (full path).
     """
     try:
-        from app.classify.classifier import get_classifier as _gc, JevClassifier as _JC
+        from app.classify.classifier import JevClassifier as _JC
+        from app.classify.classifier import get_classifier as _gc
         _clf = _gc()
         if not isinstance(_clf, _JC):
             return False, None, 0.0, False, ""
-        _v = _clf.triage(text)
+        _v = _clf.triage(text, known_characters=known_characters,
+                         open_threads=open_threads)
         return (should_skip_window(_v.importance, _v.new_character,
                                    _v.importance_confidence),
                 _v.importance, _v.importance_confidence, _v.new_character, _v.model)
@@ -68,10 +74,13 @@ def reconcile_unobserved_gap(db, session_id: int, boot_epoch: int,
     no exit event). Record it so beat hour-bucketing can see the hole.
     Stream-seconds are boot-relative, so t_* are 0 and the wall range goes
     in reason. Returns the row or None. Pure DB read + one insert."""
-    from datetime import datetime, timezone
-    from sqlalchemy import func as _func, select as _s2
+    from datetime import datetime
+
+    from sqlalchemy import func as _func
+    from sqlalchemy import select as _s2
+
     from app.db import models as _m
-    now = now_iso or datetime.now(timezone.utc).isoformat()
+    now = now_iso or datetime.now(UTC).isoformat()
     last = db.execute(_s2(_func.max(_m.Window.created_at)).where(
         _m.Window.session_id == session_id)).scalar()
     if not last:
@@ -93,8 +102,12 @@ def reconcile_unobserved_gap(db, session_id: int, boot_epoch: int,
 async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
     """Live/replay pipeline: ingest -> VAD -> ASR+speaker -> windows -> extraction."""
     import time as _time
+
     from app.db.session import ensure_schema as _ensure_schema
-    _ensure_schema()
+    # Respect isolated/eval session factories instead of always migrating the
+    # process-global database.
+    _bind = getattr(db_factory, "kw", {}).get("bind")
+    _ensure_schema(_bind)
     # Worker-boot unix time: disambiguates stream-second timestamps across restarts.
     boot_epoch = int(_time.time())
     # Startup reconciliation: record unobserved downtime from a previous kill.
@@ -120,8 +133,8 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
     prov_counter = 0
 
     def _now_iso() -> str:
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+        return datetime.now(UTC).isoformat()
 
     def _normalize(vec: np.ndarray) -> np.ndarray:
         v = np.asarray(vec, dtype="float32")
@@ -129,8 +142,10 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
         return (v / n).astype("float32") if n > 0 else v
 
     def _load_speaker_library() -> None:
-        from app.db import models as _m
         from sqlalchemy import select as _s2
+
+        from app.consent import has_consent
+        from app.db import models as _m
         db = db_factory()
         try:
             rows = db.execute(
@@ -147,11 +162,12 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
             for row in rows:
                 if row.speaker_id in seen:
                     continue
-                seen.add(row.speaker_id)
-                try:
-                    vec = np.frombuffer(row.embedding, dtype=np.float32).astype("float32").copy()
-                except Exception:
+                if settings.CONSENT_REQUIRED and not has_consent(db, row.speaker_id):
                     continue
+                seen.add(row.speaker_id)
+                if len(row.embedding) % np.dtype(np.float32).itemsize:
+                    continue
+                vec = np.frombuffer(row.embedding, dtype=np.float32).astype("float32").copy()
                 if vec.shape == (embedder.dim,):
                     centroids[row.speaker_id] = _normalize(vec)
         finally:
@@ -201,6 +217,10 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
             st["emb"] = _normalize(0.8 * np.asarray(st["emb"]) + 0.2 * emb)
             if (int(st["count"]) >= settings.SPK_PROMOTE_MIN_SEGMENTS
                     or float(st["seconds"]) >= settings.SPK_PROMOTE_MIN_SECONDS):
+                # Unknown voices may cluster in process memory, but biometric
+                # embeddings are never persisted without explicit consent.
+                if settings.CONSENT_REQUIRED:
+                    return None, None, None, "consent-required"
                 return None, conf, {
                     "key": key,
                     "emb": st["emb"],
@@ -218,7 +238,11 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
         return None, None, None, "provisional"
 
     async def ingest_task():
-        sup = IngestSupervisor(cfg.cmd, on_gap=_write_gap_now)
+        sup = IngestSupervisor(cfg.cmd, on_gap=_write_gap_now,
+                               reconnect=cfg.reconnect,
+                               offline_timeout_seconds=(
+                                   settings.SESSION_END_OFFLINE_MINUTES * 60
+                                   if cfg.reconnect else None))
         async for chunk in sup.frames():
             pcm = np.frombuffer(bytes(chunk), dtype=np.int16).astype("float32") / 32768.0
             t0 = sup.t_now - len(pcm) / 16000
@@ -228,6 +252,7 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                 _drain_gaps(sup)
         for s in segmenter.flush(sup.t_now):
             await seg_q.put(s)
+        await seg_q.put(None)
 
     def _write_gap_now(g) -> None:
         # Synchronous insert at detection time: a kill loses at most this row.
@@ -260,11 +285,15 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
             db.close()
 
     async def asr_task():
-        from app.db import models as _m
         from sqlalchemy import select as _s2
+
+        from app.db import models as _m
         while True:
             s = await seg_q.get()
             try:
+                if s is None:
+                    await utt_q.put(None)
+                    return
                 words = await asyncio.to_thread(
                     transcriber.transcribe, s.pcm, s.t_start, "")
                 text = " ".join(w.text for w in words)
@@ -339,7 +368,8 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                 await utt_q.put(Utterance(id=db_seg_id, t_start=s.t_start,
                                            t_end=s.t_end, text=text,
                                            words=len(text.split()),
-                                           speaker=str(speaker_id) if speaker_id else ""))
+                                           speaker=str(speaker_id) if speaker_id else "",
+                                           speaker_conf=speaker_conf))
                 if bus:
                     await bus.publish("transcript.segment",
                                        {"t_start": s.t_start, "text": text})
@@ -347,30 +377,55 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                 seg_q.task_done()
 
     async def window_task():
-        from app.memory.extractor import run_extraction
-        from app.db import models as m
+        from datetime import datetime
+
         from sqlalchemy import select as _s2
-        from datetime import datetime, timezone
+
+        from app.db import models as m
+        from app.memory.extractor import run_extraction
         prev_tail: list[dict] = []
         while True:
             u = await utt_q.get()
             try:
-                w = builder.add(u)
+                stopping = u is None
+                w = builder.flush() if stopping else builder.add(u)
                 if w is None:
+                    if stopping:
+                        return
                     continue
                 db = db_factory()
                 try:
                     wrow = m.Window(session_id=cfg.session_id, t_start=w.t_start,
                                      t_end=w.t_end, status="extracting",
                                      boot_epoch=boot_epoch,
-                                     created_at=datetime.now(timezone.utc).isoformat())
+                                     created_at=datetime.now(UTC).isoformat())
                     db.add(wrow)
                     db.commit()
                     db.refresh(wrow)
+                    window_id = wrow.id
+                    segment_ids = [x.id for x in w.utterances]
+                    if segment_ids:
+                        db.execute(m.Segment.__table__.update().where(
+                            m.Segment.id.in_(segment_ids)).values(window_id=window_id))
+                        db.commit()
                     utts = prev_tail + [{"id": x.id, "t_start": x.t_start,
                                           "t_end": x.t_end, "text": x.text,
-                                          "speaker": x.speaker or "unknown"}
+                                          "speaker": x.speaker or "unknown",
+                                          "conf": x.speaker_conf}
                                          for x in w.utterances]
+                    known_characters = [
+                        {"name": e.canonical_name, "desc": e.description or ""}
+                        for e in db.execute(_s2(m.Entity).where(
+                            m.Entity.channel_id == cfg.channel_id).order_by(
+                            m.Entity.mention_count.desc()).limit(50)).scalars().all()
+                    ]
+                    open_threads = [
+                        {"title": t.title, "summary": t.summary or ""}
+                        for t in db.execute(_s2(m.Thread).where(
+                            m.Thread.channel_id == cfg.channel_id,
+                            m.Thread.status == "open").order_by(
+                            m.Thread.last_updated_at.desc()).limit(20)).scalars().all()
+                    ]
                 finally:
                     db.close()
                 # Jev triage gate (§5.11/M7): fast importance check in a
@@ -378,26 +433,31 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                 # the expensive extraction + rolling calls. Fail-open: any
                 # triage error runs the full path.
                 _skipped, _timp, _tconf, _tnew, _tmodel = await asyncio.to_thread(
-                    triage_window, "\n".join(x["text"] for x in utts))
+                    triage_window, "\n".join(x["text"] for x in utts),
+                    known_characters, open_threads)
                 if _skipped:
                     db0 = db_factory()
                     try:
-                        _wskip = db0.get(m.Window, wrow.id)
+                        _wskip = db0.get(m.Window, window_id)
                         if _wskip is not None:
                             _wskip.status = "skipped-idle"
                             db0.commit()
                     finally:
                         db0.close()
-                    print(f"[triage] window {wrow.id}: idle "
+                    print(f"[triage] window {window_id}: idle "
                           f"(imp={_timp} conf={_tconf:.2f} new={_tnew} model={_tmodel})"
                           f" -> skip extraction", flush=True)
                 else:
-                    print(f"[triage] window {wrow.id}: extract "
+                    print(f"[triage] window {window_id}: extract "
                           f"(imp={_timp} conf={_tconf:.2f} new={_tnew} model={_tmodel})",
                           flush=True)
-                    await asyncio.to_thread(
-                        run_extraction, db, cfg.channel_id, cfg.session_id,
-                        wrow.id, utts, llm, settings.LLM_MODEL_EXTRACT)
+                    db_extract = db_factory()
+                    try:
+                        await asyncio.to_thread(
+                            run_extraction, db_extract, cfg.channel_id, cfg.session_id,
+                            window_id, utts, llm, settings.LLM_MODEL_EXTRACT)
+                    finally:
+                        db_extract.close()
                 # Rolling summary (§5.10) — skipped only for idle windows.
                 if not _skipped:
                     try:
@@ -409,29 +469,89 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                                     m.Summary.session_id == cfg.session_id,
                                     m.Summary.kind == "rolling").order_by(
                                     m.Summary.id.desc())).scalars().first()
-                            wdone = db3.get(m.Window, wrow.id)
+                            wdone = db3.get(m.Window, window_id)
                             ev_rows = db3.execute(
                                 _s2(m.Event).where(
-                                    m.Event.window_id == wrow.id)).scalars().all()
-                            new_text = update_rolling(
-                                llm, prev.text if prev else "",
-                                (wdone.window_summary or "") if wdone else "",
-                                [e.description for e in ev_rows])
+                                    m.Event.window_id == window_id)).scalars().all()
+                            from app.llm.budget import (
+                                budget_status,
+                                should_skip_extraction,
+                            )
+                            month_prefix = datetime.now(UTC).strftime("%Y-%m")
+                            budget = budget_status(
+                                db3, cfg.session_id, month_prefix,
+                                settings.LLM_SESSION_BUDGET_USD,
+                                settings.LLM_MONTHLY_BUDGET_USD)
+                            skip_summary, _ = should_skip_extraction(budget)
+                            if skip_summary:
+                                new_text, rolling_prompt = "", ""
+                            else:
+                                new_text, rolling_prompt = update_rolling(
+                                    llm, prev.text if prev else "",
+                                    (wdone.window_summary or "") if wdone else "",
+                                    [e.description for e in ev_rows], include_prompt=True)
                             if new_text.strip():
                                 save_summary(db3, cfg.session_id, "rolling", new_text,
                                              t0=w.t_start, t1=w.t_end,
-                                             model=settings.LLM_MODEL_EXTRACT)
+                                             model=settings.LLM_MODEL_EXTRACT,
+                                             input_text=rolling_prompt)
+                                from app.observability import clear_session_error
+                                clear_session_error(db3, cfg.session_id, "rolling")
+                                db3.commit()
                         finally:
                             db3.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        from app.observability import (
+                            report_pipeline_error,
+                            set_session_error,
+                        )
+                        report_pipeline_error("rolling", exc)
+                        err_db = db_factory()
+                        try:
+                            set_session_error(err_db, cfg.session_id, "rolling", exc)
+                            err_db.commit()
+                        finally:
+                            err_db.close()
+                        if bus:
+                            await bus.publish(
+                                "pipeline.error",
+                                {"stage": "rolling", "window_id": window_id,
+                                 "error": type(exc).__name__})
                 prev_tail = utts[-2:]
                 if bus:
-                    await bus.publish("summary.updated", {"window_id": wrow.id})
+                    await bus.publish("summary.updated", {"window_id": window_id})
+                if stopping:
+                    return
             finally:
                 utt_q.task_done()
 
+    final_status = "ended"
+    fatal_exc: Exception | None = None
     try:
         await asyncio.gather(ingest_task(), asr_task(), window_task())
     except asyncio.CancelledError:
-        pass
+        raise
+    except Exception as exc:
+        final_status = "failed"
+        fatal_exc = exc
+        from app.observability import report_pipeline_error
+        report_pipeline_error("session", exc)
+        raise
+    finally:
+        from datetime import datetime
+
+        from app.db import models as _m
+        db = db_factory()
+        try:
+            session = db.get(_m.Session, cfg.session_id)
+            if session is not None:
+                session.status = final_status
+                session.ended_at = datetime.now(UTC).isoformat()
+                if fatal_exc is not None:
+                    from app.observability import set_session_error
+                    set_session_error(db, cfg.session_id, "session", fatal_exc)
+                db.commit()
+                from app.retention import enforce_retention
+                enforce_retention(db)
+        finally:
+            db.close()

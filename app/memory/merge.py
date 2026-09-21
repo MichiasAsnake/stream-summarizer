@@ -7,7 +7,7 @@ POST /entities/merge endpoint.
 """
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session as SASession
 
 from app.classify.classifier import JevClassifier, get_classifier
@@ -38,9 +38,7 @@ def candidate_pairs(db: SASession, channel_id: int, limit: int = 25
         names_a = {a.canonical_name.lower()} | {x.lower() for x in aliases[a.id]}
         for b in ents[i + 1:]:
             names_b = {b.canonical_name.lower()} | {x.lower() for x in aliases[b.id]}
-            if names_a & names_b:
-                pairs.append((a, b))
-            elif _fuzz is not None and _fuzz.token_set_ratio(
+            if names_a & names_b or _fuzz is not None and _fuzz.token_set_ratio(
                     a.canonical_name.lower(), b.canonical_name.lower()) >= 85:
                 pairs.append((a, b))
             if len(pairs) >= limit:

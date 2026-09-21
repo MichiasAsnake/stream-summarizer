@@ -104,6 +104,7 @@ def test_suggest_merges_requires_jev(monkeypatch):
 
 def test_streamer_pair_capped_at_review():
     import json
+
     from app.db import models as m
     from app.memory.merge import suggest_merges
 

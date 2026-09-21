@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     TWITCH_CLIENT_ID: str = ""
     TWITCH_CLIENT_SECRET: str = ""
-    API_BEARER_TOKEN: str = "dev-token-change-me"
+    API_BEARER_TOKEN: str = ""
 
     ASR_BACKEND: str = "stub"  # stub|mlx_whisper|whisper_cpp|faster_whisper|hosted
     ASR_MODEL: str = "small"
@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     LLM_PROVIDER: str = "stub"  # stub|gemini|anthropic|openai_compat
     LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = ""
     LLM_MODEL_EXTRACT: str = "gemini-3.6-flash"
     LLM_MODEL_RECAP: str = "gemini-3.6-flash"
     LLM_SESSION_BUDGET_USD: float = 5.0
@@ -37,6 +38,16 @@ class Settings(BaseSettings):
     LLM_MONTHLY_BUDGET_USD: float = 20.0
     LLM_COST_PER_1K_IN: float = 0.0005
     LLM_COST_PER_1K_OUT: float = 0.0015
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BACKOFF_SECONDS: float = 0.5
+
+    # Only sufficiently supported model output may mutate canonical memory.
+    # Lower-confidence output remains in windows.extraction_json for review.
+    MEMORY_ENTITY_MIN_CONFIDENCE: float = 0.65
+    MEMORY_THREAD_MIN_CONFIDENCE: float = 0.65
+    MEMORY_EVENT_MIN_CONFIDENCE: float = 0.60
+    MEMORY_ATTRIBUTION_MIN_CONFIDENCE: float = 0.60
 
     # D1: roleplay|gaming|just_chatting
     CONTENT_PROFILE: str = "roleplay"
@@ -47,7 +58,6 @@ class Settings(BaseSettings):
     # D3: consent gate + TTLs
     CONSENT_REQUIRED: bool = True
     CONSENT_TTL_DAYS: int = 365
-    UNKNOWN_CLIP_TTL_HOURS: int = 72
     TRANSCRIPT_RETENTION_DAYS: int = 365
     # D6
     JEV_ENABLED: bool = False
@@ -61,6 +71,9 @@ class Settings(BaseSettings):
     SESSION_END_OFFLINE_MINUTES: int = 5
     DB_URL: str = "sqlite:///data/app.db"
     DATA_DIR: str = "./data"
+
+    HOSTED_ASR_URL: str = ""
+    HOSTED_ASR_API_KEY: str = ""
 
 
 settings = Settings()

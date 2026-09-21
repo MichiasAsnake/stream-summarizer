@@ -6,7 +6,6 @@ import numpy as np
 from app.asr.guards import average_logprob, should_drop
 from app.interfaces import Word
 
-
 MODEL_ALIASES = {
     "tiny": "mlx-community/whisper-tiny-mlx",
     "base": "mlx-community/whisper-base-mlx",

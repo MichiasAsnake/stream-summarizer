@@ -6,7 +6,7 @@ DB of non-consenting people.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as SASession
@@ -15,7 +15,7 @@ from app.db import models as m
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def grant_consent(db: SASession, channel_id: int, speaker_id: int, note: str,
@@ -28,10 +28,21 @@ def grant_consent(db: SASession, channel_id: int, speaker_id: int, note: str,
     return c
 
 
-def has_consent(db: SASession, speaker_id: int) -> bool:
+def has_consent(db: SASession, speaker_id: int, ttl_days: int | None = None) -> bool:
     row = db.execute(select(m.Consent).where(m.Consent.speaker_id == speaker_id)
                      .order_by(m.Consent.id.desc())).scalars().first()
-    return row is not None and row.revoked_at is None
+    if row is None or row.revoked_at is not None:
+        return False
+    if ttl_days is None:
+        from app.config import settings
+        ttl_days = settings.CONSENT_TTL_DAYS
+    if ttl_days <= 0:
+        return True
+    try:
+        granted = datetime.fromisoformat(row.granted_at)
+    except (TypeError, ValueError):
+        return False
+    return datetime.now(UTC) - granted <= timedelta(days=ttl_days)
 
 
 def revoke_consent(db: SASession, speaker_id: int) -> None:
@@ -39,6 +50,10 @@ def revoke_consent(db: SASession, speaker_id: int) -> None:
                                               m.Consent.revoked_at.is_(None))).scalars().all()
     for r in rows:
         r.revoked_at = utcnow()
+    # Revocation is immediate: retained voiceprints would defeat the consent
+    # gate even if the consent row itself were marked revoked.
+    db.execute(m.SpeakerEmbedding.__table__.delete().where(
+        m.SpeakerEmbedding.speaker_id == speaker_id))
     db.commit()
 
 
@@ -58,4 +73,4 @@ def clip_expired(created_at_iso: str, ttl_hours: float) -> bool:
         created = datetime.fromisoformat(created_at_iso)
     except ValueError:
         return True
-    return datetime.now(timezone.utc) - created > timedelta(hours=ttl_hours)
+    return datetime.now(UTC) - created > timedelta(hours=ttl_hours)

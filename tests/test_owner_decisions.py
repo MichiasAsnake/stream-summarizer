@@ -1,12 +1,15 @@
+from datetime import UTC
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.content_profiles import PROFILES, get_hint, validate
-from app.deploy import resolve_asr
-from app.mode import retention_defaults
 from app.consent import check_enroll_allowed, grant_consent, has_consent, revoke_consent
-from app.llm.budget import estimate_cost_usd, should_skip_extraction
+from app.content_profiles import PROFILES, get_hint, validate
 from app.db.models import Base
+from app.deploy import resolve_asr
+from app.llm.budget import estimate_cost_usd, should_skip_extraction
+from app.mode import retention_defaults
 
 
 def _db():
@@ -18,11 +21,8 @@ def _db():
 def test_profiles_valid():
     for p in PROFILES:
         assert get_hint(validate(p))
-    try:
+    with pytest.raises(ValueError):
         validate("nope")
-        assert False
-    except ValueError:
-        pass
 
 
 def test_deploy_asr_defaults():
@@ -43,10 +43,11 @@ def test_consent_gate():
 
 
 def test_consent_grant_revoke():
+    from datetime import datetime
+
     from app.db import models as m
-    from datetime import datetime, timezone
     db = _db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     ch = m.Channel(twitch_login="x", created_at=now)
     db.add(ch)
     db.commit()
@@ -73,7 +74,7 @@ def test_public_retention_stricter():
 
 
 def test_jev_gated():
-    from app.classify.classifier import get_classifier, LlmClassifier
+    from app.classify.classifier import LlmClassifier, get_classifier
     from app.config import settings
     settings.JEV_ENABLED = False
     assert isinstance(get_classifier("jev"), LlmClassifier)

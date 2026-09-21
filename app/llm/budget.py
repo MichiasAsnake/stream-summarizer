@@ -19,16 +19,20 @@ def estimate_cost_usd(tokens_in: int, tokens_out: int,
 
 
 def session_spend(db: SASession, session_id: int) -> float:
-    total = db.execute(select(func.coalesce(func.sum(m.Window.cost_usd), 0.0))
-                       .where(m.Window.session_id == session_id)).scalar()
-    return float(total or 0.0)
+    windows = db.execute(select(func.coalesce(func.sum(m.Window.cost_usd), 0.0))
+                         .where(m.Window.session_id == session_id)).scalar()
+    summaries = db.execute(select(func.coalesce(func.sum(m.Summary.cost_usd), 0.0))
+                           .where(m.Summary.session_id == session_id)).scalar()
+    return float(windows or 0.0) + float(summaries or 0.0)
 
 
 def monthly_spend(db: SASession, month_prefix: str) -> float:
     """month_prefix like '2026-09' matched against windows.created_at."""
-    total = db.execute(select(func.coalesce(func.sum(m.Window.cost_usd), 0.0))
-                       .where(m.Window.created_at.like(f"{month_prefix}%"))).scalar()
-    return float(total or 0.0)
+    windows = db.execute(select(func.coalesce(func.sum(m.Window.cost_usd), 0.0))
+                         .where(m.Window.created_at.like(f"{month_prefix}%"))).scalar()
+    summaries = db.execute(select(func.coalesce(func.sum(m.Summary.cost_usd), 0.0))
+                           .where(m.Summary.created_at.like(f"{month_prefix}%"))).scalar()
+    return float(windows or 0.0) + float(summaries or 0.0)
 
 
 def budget_status(db: SASession, session_id: int, month_prefix: str,

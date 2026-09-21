@@ -1,32 +1,48 @@
 """FastAPI app (§5.12): REST + SSE, static bearer auth, Prometheus metrics."""
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
+import secrets
 
-from app.api import routes_channels, routes_memory, routes_sessions, routes_speakers, ui_page
+from fastapi import Depends, FastAPI, Header, HTTPException
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app.api import (
+    routes_channels,
+    routes_memory,
+    routes_sessions,
+    routes_speakers,
+    ui_page,
+)
 from app.config import settings
-from app.db.session import ensure_schema, init_db, SessionLocal
+from app.db.session import SessionLocal, ensure_schema, init_db
 from app.task_manager import TaskManager
-
-LLM_ERRORS = Counter("llm_errors_total", "LLM errors")
 
 app = FastAPI(title="Stream Summarizer V1")
 
 
 def auth(authorization: str | None = Header(default=None)):
-    if not authorization or authorization != f"Bearer {settings.API_BEARER_TOKEN}":
+    expected = f"Bearer {settings.API_BEARER_TOKEN}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
         raise HTTPException(401, "unauthorized")
     return True
 
 
 @app.on_event("startup")
 def _startup():
+    if (not settings.API_BEARER_TOKEN
+            or settings.API_BEARER_TOKEN == "dev-token-change-me"):
+        raise RuntimeError(
+            "Set API_BEARER_TOKEN to a strong, non-default secret before starting")
     init_db()
     ensure_schema()
     app.state.db_factory = SessionLocal
     app.state.task_manager = TaskManager()
+    from app.retention import enforce_retention
+    db = SessionLocal()
+    try:
+        enforce_retention(db)
+    finally:
+        db.close()
     # D4: public mode without legal sign-off is blocked loudly, not silently
     if settings.APP_MODE == "public":
         import logging
@@ -42,7 +58,7 @@ def mode():
             "jev_enabled": settings.JEV_ENABLED}
 
 
-@app.get("/api/v1/metrics")
+@app.get("/api/v1/metrics", dependencies=[Depends(auth)])
 def metrics():
     from fastapi.responses import Response
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

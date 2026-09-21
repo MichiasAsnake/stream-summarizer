@@ -1,6 +1,8 @@
 """Entity resolution (§5.9): exact alias -> fuzzy(>=90) w/ review flag -> provisional create."""
 from __future__ import annotations
 
+from datetime import UTC
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as SASession
 
@@ -13,9 +15,9 @@ def resolve_entity(db: SASession, channel_id: int, ref: str, etype: str = "other
     ref = ref.strip()
     if ref.startswith("E") and ref[1:].isdigit():
         ent = db.get(m.Entity, int(ref[1:]))
-        if ent is not None:
+        if ent is not None and ent.channel_id == channel_id and ent.status != "merged":
             return ent, False
-    name = ref[4:] if ref.startswith("NEW:") else ref
+    name = ref.removeprefix("NEW:")
     # 1. exact alias (case-insensitive)
     q = (select(m.Entity).join(m.EntityAlias, m.EntityAlias.entity_id == m.Entity.id)
          .where(m.Entity.channel_id == channel_id, func.lower(m.EntityAlias.alias) == name.lower()))
@@ -48,10 +50,10 @@ def resolve_entity(db: SASession, channel_id: int, ref: str, etype: str = "other
         except ImportError:
             pass
     # 3. provisional create
-    from datetime import datetime, timezone
+    from datetime import datetime
     ent = m.Entity(channel_id=channel_id, type=etype, canonical_name=name, status="provisional",
                    mention_count=0, first_seen_session=session_id,
-                   last_seen_at=datetime.now(timezone.utc).isoformat())
+                   last_seen_at=datetime.now(UTC).isoformat())
     db.add(ent)
     db.flush()
     db.add(m.EntityAlias(entity_id=ent.id, alias=name, source="extraction"))
@@ -59,9 +61,9 @@ def resolve_entity(db: SASession, channel_id: int, ref: str, etype: str = "other
 
 
 def touch_entity(db: SASession, ent: m.Entity, delta: str = "") -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
     ent.mention_count += 1
-    ent.last_seen_at = datetime.now(timezone.utc).isoformat()
+    ent.last_seen_at = datetime.now(UTC).isoformat()
     if delta:
         ent.description = ((ent.description or "") + " " + delta).strip()[:2000]
     # promote provisional -> confirmed after >=2 windows (§5.9)

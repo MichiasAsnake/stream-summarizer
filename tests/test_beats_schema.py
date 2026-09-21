@@ -1,3 +1,5 @@
+from datetime import UTC
+
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -14,10 +16,11 @@ def _db():
 
 
 def test_beat_tables_exist_and_link():
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from app.db import models as m
     eng, db = _db()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     beat = m.PlotBeat(session_id=1, hour_index=3, run_label="live",
                       wall_start=now, wall_end=now, t_start=10.0, t_end=99.0,
                       headline="Arrest made", context="X was arrested.",

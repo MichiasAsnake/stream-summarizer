@@ -12,7 +12,7 @@ import time
 
 
 def run_ab(mock: bool = True) -> dict:
-    from app.classify.classifier import LlmClassifier, JevClassifier
+    from app.classify.classifier import JevClassifier, LlmClassifier
     from app.config import settings
     from app.interfaces import Candidates
 

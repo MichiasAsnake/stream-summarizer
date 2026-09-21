@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC
 
 from sqlalchemy.orm import Session as SASession
 
@@ -16,8 +17,10 @@ from app.memory.writer import write_extraction
 def format_utterances(rows: list[dict]) -> str:
     lines = []
     for r in rows:
+        conf = r.get("conf")
+        conf_text = f"{conf:.2f}" if isinstance(conf, (int, float)) else "unknown"
         lines.append(f'[seg {r["id"]} | {r["t_start"]:.1f}–{r["t_end"]:.1f} | speaker: {r.get("speaker","?")} '
-                     f'(conf {r.get("conf",0):.2f})] "{r["text"]}"')
+                     f'(conf {conf_text})] "{r["text"]}"')
     return "\n".join(lines)
 
 
@@ -29,9 +32,9 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
     # D5: session/monthly cap — pause extraction, keep transcribing (§8 degradation ladder)
     try:
         month_prefix = (db.get(m.Window, window_id).created_at or "")[:7] if db.get(m.Window, window_id) else ""
-        from datetime import datetime, timezone
+        from datetime import datetime
         if not month_prefix:
-            month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+            month_prefix = datetime.now(UTC).strftime("%Y-%m")
         status = budget_status(db, session_id, month_prefix,
                                settings.LLM_SESSION_BUDGET_USD, settings.LLM_MONTHLY_BUDGET_USD)
         skip, reason = should_skip_extraction(status)
@@ -42,8 +45,9 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
                 w.extraction_json = f'{{"skipped": "{reason}"}}'
                 db.commit()
             return Extraction(window_summary="", open_questions=[reason])
-    except Exception:
-        pass
+    except Exception as exc:
+        from app.observability import report_pipeline_error
+        report_pipeline_error("budget-check", exc)
     # D1: content-profile hint shapes the character/thread model
     try:
         import json as _json
@@ -60,7 +64,6 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
     except Exception:
         system = prompts.EXTRACTION_SYSTEM
     ctx = build_context(db, channel_id, session_id,
-                        [u["text"] for u in utterances],
                         [u.get("speaker", "?") for u in utterances])
     prompt = f"<context>\n{ctx}\n</context>\n<transcript>\n{format_utterances(utterances)}\n</transcript>"
     schema = Extraction.model_json_schema()
@@ -78,15 +81,23 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
             raw = llm.generate_json(
                 schema,
                 prompt + "\nYou returned an empty result. The transcript above contains speech: "
-                "write a 1-2 sentence window_summary, at least one event, and attribute the utterances.",
+                "write a grounded 1-2 sentence window_summary. Events, entity updates, thread "
+                "updates, and attributions may remain empty when nothing material or reliably "
+                "attributable occurred. Do not invent content to fill an array.",
                 system=system)
             ext = Extraction.model_validate(raw)
-    except Exception:
-        raw = llm.generate_json(schema, prompt + "\nReturn ONLY valid JSON matching the schema.",
-                                system=system)
+    except Exception as first_exc:
+        from app.observability import report_pipeline_error, set_session_error
+        report_pipeline_error("extraction-attempt", first_exc)
+        set_session_error(db, session_id, "extraction", first_exc)
         try:
+            raw = llm.generate_json(
+                schema, prompt + "\nReturn ONLY valid JSON matching the schema.",
+                system=system)
             ext = Extraction.model_validate(raw)
-        except Exception:
+        except Exception as retry_exc:
+            report_pipeline_error("extraction", retry_exc)
+            set_session_error(db, session_id, "extraction", retry_exc)
             w = db.get(m.Window, window_id)
             if w:
                 w.status = "failed"
@@ -110,6 +121,8 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
                                settings.LLM_COST_PER_1K_OUT)
         except Exception:
             pass
+        from app.observability import clear_session_error
+        clear_session_error(db, session_id, "extraction")
         db.commit()
     write_extraction(db, channel_id, session_id, window_id, ext)
     return ext

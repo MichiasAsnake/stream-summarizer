@@ -3,32 +3,51 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as SASession
 
+from app.config import settings
 from app.db import models as m
 from app.db.session import get_db
-from app.summarize.rolling import build_recap, save_summary
 from app.llm.base import get_llm
-from app.config import settings
+from app.summarize.rolling import build_recap, save_summary
 
 router = APIRouter()
-_subscribers: list[asyncio.Queue] = []
+_subscribers: dict[int, list[asyncio.Queue]] = {}
+
+
+class SessionBus:
+    """Pipeline-facing publisher scoped to exactly one session."""
+
+    def __init__(self, session_id: int):
+        self.session_id = session_id
+
+    async def publish(self, kind: str, payload: dict) -> None:
+        await publish(self.session_id, kind, payload)
+
+
+def _require_session(db: SASession, sid: int) -> m.Session:
+    session = db.get(m.Session, sid)
+    if session is None:
+        raise HTTPException(404, "session not found")
+    return session
 
 
 @router.get("/sessions/{sid}")
 def get_session(sid: int, db: SASession = Depends(get_db)):
-    s = db.get(m.Session, sid)
-    return {"id": s.id, "status": s.status, "title": s.title, "category": s.category} if s else {"error": "not found"}
+    s = _require_session(db, sid)
+    return {"id": s.id, "status": s.status, "title": s.title, "category": s.category,
+            "last_error": s.last_error, "last_error_at": s.last_error_at}
 
 
 @router.get("/sessions/{sid}/summary")
 def get_summary(sid: int, db: SASession = Depends(get_db)):
+    _require_session(db, sid)
     row = db.execute(select(m.Summary).where(m.Summary.session_id == sid,
                                              m.Summary.kind == "rolling")
                      .order_by(m.Summary.id.desc())).scalars().first()
@@ -58,6 +77,7 @@ def _recap_snapshot(db: SASession, sid: int) -> str:
 def recap_status(sid: int, db: SASession = Depends(get_db)):
     """Cheap poll target for the NEW badge: changes only when a click would
     return a freshly regenerated recap."""
+    _require_session(db, sid)
     return {"key": _recap_snapshot(db, sid)}
 
 
@@ -69,25 +89,38 @@ def get_recap(sid: int, db: SASession = Depends(get_db)):
     (compared as a snapshot of max event id + max thread timestamp).
     Window-only churn regenerates nothing and returns instantly.
     """
-    try:
-        db.execute(text("ALTER TABLE summaries ADD COLUMN cache_key TEXT"))
-        db.commit()
-    except Exception:
-        db.rollback()
+    _require_session(db, sid)
     key = _recap_snapshot(db, sid)
     cached = db.execute(select(m.Summary).where(m.Summary.session_id == sid,
                                                 m.Summary.kind == "recap")
                         .order_by(m.Summary.id.desc())).scalars().first()
     if cached is not None and getattr(cached, "cache_key", None) == key:
         return {"id": cached.id, "text": cached.text, "cached": True}
-    fresh = build_recap(db, sid, get_llm("recap"))
-    row = save_summary(db, sid, "recap", fresh, model=settings.LLM_MODEL_RECAP)
+    from app.llm.budget import budget_status, should_skip_extraction
+    month_prefix = datetime.now(UTC).strftime("%Y-%m")
+    budget = budget_status(db, sid, month_prefix, settings.LLM_SESSION_BUDGET_USD,
+                           settings.LLM_MONTHLY_BUDGET_USD)
+    skip, reason = should_skip_extraction(budget)
+    if skip:
+        if cached is not None:
+            return {"id": cached.id, "text": cached.text, "cached": True,
+                    "budget_limited": True}
+        raise HTTPException(429, reason)
     try:
-        db.execute(text("UPDATE summaries SET cache_key=:k WHERE id=:i"),
-                   {"k": key, "i": row.id})
+        fresh, recap_prompt = build_recap(
+            db, sid, get_llm("recap"), include_prompt=True)
+    except Exception as exc:
+        from app.observability import report_pipeline_error, set_session_error
+        report_pipeline_error("recap", exc)
+        set_session_error(db, sid, "recap", exc)
         db.commit()
-    except Exception:
-        db.rollback()
+        raise HTTPException(503, "recap generation temporarily unavailable") from exc
+    from app.observability import clear_session_error
+    clear_session_error(db, sid, "recap")
+    row = save_summary(db, sid, "recap", fresh, model=settings.LLM_MODEL_RECAP,
+                       input_text=recap_prompt)
+    row.cache_key = key
+    db.commit()
     return {"id": row.id, "text": fresh, "cached": False}
 
 
@@ -101,13 +134,18 @@ class FeedbackIn(BaseModel):
 def post_feedback(sid: int, body: FeedbackIn, db: SASession = Depends(get_db)):
     """Confidence vote on the displayed summary. A No / Not Sure on a recap
     invalidates its cache so the next catch-up regenerates in simpler style."""
+    _require_session(db, sid)
     if body.kind not in ("rolling", "recap"):
         raise HTTPException(400, "kind must be rolling|recap")
     if body.vote not in ("yes", "no", "not_sure"):
         raise HTTPException(400, "vote must be yes|no|not_sure")
+    if body.summary_id is not None:
+        summary = db.get(m.Summary, body.summary_id)
+        if summary is None or summary.session_id != sid or summary.kind != body.kind:
+            raise HTTPException(422, "summary does not belong to this session and kind")
     db.add(m.SummaryFeedback(summary_id=body.summary_id, session_id=sid,
                              kind=body.kind, vote=body.vote,
-                             created_at=datetime.now(timezone.utc).isoformat()))
+                             created_at=datetime.now(UTC).isoformat()))
     db.commit()
     if body.kind == "recap" and body.vote in ("no", "not_sure"):
         latest = db.execute(select(m.Summary).where(m.Summary.session_id == sid,
@@ -121,6 +159,7 @@ def post_feedback(sid: int, body: FeedbackIn, db: SASession = Depends(get_db)):
 
 @router.get("/sessions/{sid}/feedback")
 def get_feedback(sid: int, db: SASession = Depends(get_db)):
+    _require_session(db, sid)
     counts = {"rolling": {"yes": 0, "no": 0, "not_sure": 0},
               "recap": {"yes": 0, "no": 0, "not_sure": 0}}
     rows = db.execute(select(m.SummaryFeedback).where(
@@ -133,6 +172,7 @@ def get_feedback(sid: int, db: SASession = Depends(get_db)):
 
 @router.get("/sessions/{sid}/transcript")
 def get_transcript(sid: int, from_: float = 0, to: float = 1e9, db: SASession = Depends(get_db)):
+    _require_session(db, sid)
     rows = db.execute(select(m.Segment).where(m.Segment.session_id == sid,
                                               m.Segment.t_start >= from_, m.Segment.t_start <= to)
                       .order_by(m.Segment.t_start)).scalars().all()
@@ -142,6 +182,7 @@ def get_transcript(sid: int, from_: float = 0, to: float = 1e9, db: SASession = 
 
 @router.get("/sessions/{sid}/events")
 def get_events(sid: int, db: SASession = Depends(get_db)):
+    _require_session(db, sid)
     rows = db.execute(select(m.Event).where(m.Event.session_id == sid)
                       .order_by(m.Event.t_start)).scalars().all()
     return [{"id": e.id, "t_start": e.t_start, "description": e.description,
@@ -149,20 +190,34 @@ def get_events(sid: int, db: SASession = Depends(get_db)):
 
 
 @router.get("/sessions/{sid}/stream")
-async def stream(sid: int):
-    q: asyncio.Queue = asyncio.Queue()
-    _subscribers.append(q)
+async def stream(sid: int, db: SASession = Depends(get_db)):
+    _require_session(db, sid)
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    _subscribers.setdefault(sid, []).append(q)
 
     async def gen():
         try:
             while True:
-                msg = await q.get()
-                yield f"data: {json.dumps(msg)}\n\n"
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except TimeoutError:
+                    yield ": keepalive\n\n"
         finally:
-            _subscribers.remove(q)
+            listeners = _subscribers.get(sid, [])
+            if q in listeners:
+                listeners.remove(q)
+            if not listeners:
+                _subscribers.pop(sid, None)
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-async def publish(kind: str, payload: dict):
-    for q in list(_subscribers):
-        await q.put({"type": kind, **payload})
+async def publish(sid: int, kind: str, payload: dict):
+    message = {"type": kind, "session_id": sid, **payload}
+    for q in list(_subscribers.get(sid, [])):
+        if q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        q.put_nowait(message)
