@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     JEV_BASE_URL: str = "https://api.typesafe.ai"
 
     SESSION_END_OFFLINE_MINUTES: int = 5
+    # Auto-monitor: channels opted in via PUT /channels/{id}/auto-monitor are
+    # checked this often and a monitor starts when they go live. Uses the
+    # Twitch API when TWITCH_CLIENT_ID/SECRET are set, else `streamlink --json`.
+    AUTO_MONITOR_ENABLED: bool = True
+    AUTO_MONITOR_POLL_SECONDS: float = 60.0
+    # Don't auto-restart a channel whose last session ended without capturing
+    # any speech within this many minutes (avoids a restart loop when ingest
+    # is broken but Twitch still reports the channel live).
+    AUTO_MONITOR_RESTART_COOLDOWN_MINUTES: float = 10.0
+    STREAMLINK_BIN: str = "streamlink"
+    # Write an end-of-stream summary for sessions that ended or were interrupted.
+    FINAL_SUMMARY_ENABLED: bool = True
     DB_URL: str = "sqlite:///data/app.db"
     DATA_DIR: str = "./data"
 

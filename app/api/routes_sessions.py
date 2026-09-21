@@ -47,6 +47,7 @@ def list_sessions(limit: int = 50, db: SASession = Depends(get_db)):
                       .order_by(m.Session.id.desc()).limit(limit)).all()
     return [{"id": s.id, "channel_id": s.channel_id, "twitch_login": login,
              "source": s.source, "status": s.status, "title": s.title,
+             "category": s.category,
              "started_at": s.started_at, "ended_at": s.ended_at,
              "last_error": s.last_error} for s, login in rows]
 
@@ -55,7 +56,9 @@ def list_sessions(limit: int = 50, db: SASession = Depends(get_db)):
 def get_session(sid: int, db: SASession = Depends(get_db)):
     s = _require_session(db, sid)
     return {"id": s.id, "status": s.status, "title": s.title, "category": s.category,
-            "last_error": s.last_error, "last_error_at": s.last_error_at}
+            "last_error": s.last_error, "last_error_at": s.last_error_at,
+            "started_at": s.started_at, "ended_at": s.ended_at,
+            "final_summary": s.final_summary}
 
 
 @router.get("/sessions/{sid}/summary")

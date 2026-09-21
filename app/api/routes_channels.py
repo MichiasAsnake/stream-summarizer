@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session as SASession
 
@@ -25,9 +27,8 @@ def get_db_factory(request: Request):
 
 
 @router.post("/channels")
-def create_channel(twitch_login: str, content_profile: str = "", db: SASession = Depends(get_db)):
-    import json
-
+def create_channel(twitch_login: str, content_profile: str = "", auto_monitor: bool = False,
+                   db: SASession = Depends(get_db)):
     from app.config import settings
     from app.content_profiles import validate
     twitch_login = twitch_login.strip()
@@ -36,36 +37,40 @@ def create_channel(twitch_login: str, content_profile: str = "", db: SASession =
     profile = validate(content_profile or settings.CONTENT_PROFILE)
     now = datetime.now(UTC).isoformat()
     ch = m.Channel(twitch_login=twitch_login.lower(),
-                   config_json=json.dumps({"content_profile": profile}), created_at=now)
+                   config_json=json.dumps({"content_profile": profile,
+                                           "auto_monitor": auto_monitor}),
+                   created_at=now)
     db.add(ch)
     db.commit()
     db.refresh(ch)
-    return {"id": ch.id, "twitch_login": ch.twitch_login, "content_profile": profile}
+    return {"id": ch.id, "twitch_login": ch.twitch_login, "content_profile": profile,
+            "auto_monitor": auto_monitor}
 
 
 @router.get("/channels")
 def list_channels(db: SASession = Depends(get_db)):
-    return [{"id": c.id, "twitch_login": c.twitch_login}
+    return [{"id": c.id, "twitch_login": c.twitch_login,
+             "auto_monitor": bool(channel_config(c).get("auto_monitor"))}
             for c in db.execute(select(m.Channel)).scalars().all()]
 
 
-def _launch(request: Request, cfg, key: str) -> None:
+def _launch(app, cfg, key: str) -> None:
     """Start run_session under a lease already acquired for key."""
     from app.api.routes_sessions import SessionBus
     from app.leases import run_leased
     from app.pipeline import run_session
-    tm: TaskManager = request.app.state.task_manager
-    db_factory = request.app.state.db_factory
+    tm: TaskManager = app.state.task_manager
+    db_factory = app.state.db_factory
     t = asyncio.create_task(run_leased(
         lambda: run_session(cfg, db_factory=db_factory, bus=SessionBus(cfg.session_id)),
-        key=key, owner=request.app.state.worker_id, db_factory=db_factory))
+        key=key, owner=app.state.worker_id, db_factory=db_factory))
     tm.set(cfg.session_id, ManagedTask(task=t, cfg=cfg))
 
 
-@router.post("/channels/{cid}/monitor")
-async def start_monitor(cid: int, request: Request, db: SASession = Depends(get_db)):
-    """Start the live pipeline. A per-channel database lease guarantees one
-    monitor per channel across concurrent requests and server workers."""
+def start_live_session(app, db: SASession, ch: m.Channel, info=None) -> dict:
+    """Start a channel's live pipeline. A per-channel database lease
+    guarantees one monitor per channel across requests, workers and the
+    auto-monitor. info (StreamInfo) seeds the session's stream metadata."""
     from app.ingest.supervisor import build_live_cmd
     from app.leases import (
         attach_session,
@@ -76,10 +81,7 @@ async def start_monitor(cid: int, request: Request, db: SASession = Depends(get_
         try_acquire,
     )
     from app.pipeline import PipelineConfig
-    ch = db.get(m.Channel, cid)
-    if ch is None:
-        raise HTTPException(404, "channel not found")
-    key, owner = live_key(cid), request.app.state.worker_id
+    key, owner = live_key(ch.id), app.state.worker_id
     if not try_acquire(db, key, owner):
         holder = current(db, key)
         return {"session_id": holder.session_id if holder else None,
@@ -87,20 +89,58 @@ async def start_monitor(cid: int, request: Request, db: SASession = Depends(get_
     try:
         # We own the channel now, so any older live session left "live" by a
         # crashed worker is definitively orphaned.
-        reconcile_orphans(db, channel_id=cid, source="live", grace_seconds=0)
+        reconcile_orphans(db, channel_id=ch.id, source="live", grace_seconds=0)
         now = datetime.now(UTC).isoformat()
-        s = m.Session(channel_id=cid, source="live", status="live", started_at=now)
+        s = m.Session(channel_id=ch.id, source="live", status="live", started_at=now)
+        if info is not None:
+            s.twitch_stream_id, s.title, s.category = info.stream_id, info.title, info.category
+            if info.title or info.category:
+                s.meta_history = json.dumps(
+                    [{"at": now, "title": info.title, "category": info.category}])
         db.add(s)
         db.commit()
         db.refresh(s)
         attach_session(db, key, owner, s.id)
-        cfg = PipelineConfig(session_id=s.id, channel_id=cid,
+        cfg = PipelineConfig(session_id=s.id, channel_id=ch.id,
                              cmd=build_live_cmd(ch.twitch_login), reconnect=True)
-        _launch(request, cfg, key)
+        _launch(app, cfg, key)
     except Exception:
         release(db, key, owner)
         raise
     return {"session_id": s.id, "status": "pipeline-started"}
+
+
+@router.post("/channels/{cid}/monitor")
+async def start_monitor(cid: int, request: Request, db: SASession = Depends(get_db)):
+    """Start the live pipeline now (see also PUT /channels/{cid}/auto-monitor)."""
+    ch = db.get(m.Channel, cid)
+    if ch is None:
+        raise HTTPException(404, "channel not found")
+    return start_live_session(request.app, db, ch)
+
+
+class AutoMonitorIn(BaseModel):
+    enabled: bool
+
+
+def channel_config(ch: m.Channel) -> dict:
+    try:
+        return json.loads(ch.config_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+@router.put("/channels/{cid}/auto-monitor")
+def set_auto_monitor(cid: int, body: AutoMonitorIn, db: SASession = Depends(get_db)):
+    """Opt a channel in or out of starting a monitor automatically when it goes live."""
+    ch = db.get(m.Channel, cid)
+    if ch is None:
+        raise HTTPException(404, "channel not found")
+    cfg = channel_config(ch)
+    cfg["auto_monitor"] = body.enabled
+    ch.config_json = json.dumps(cfg)
+    db.commit()
+    return {"id": ch.id, "auto_monitor": body.enabled}
 
 
 @router.delete("/channels/{cid}/monitor")
@@ -157,7 +197,7 @@ async def start_replay(cid: int, request: Request, url: str = "", file: str = ""
     try:
         cfg = PipelineConfig(session_id=sid, channel_id=cid,
                              cmd=build_replay_cmd(source), reconnect=False)
-        _launch(request, cfg, key)
+        _launch(request.app, cfg, key)
     except Exception:
         release(db, key, owner)
         raise

@@ -75,15 +75,18 @@ async def _reconcile_loop():
 async def _start_reconciler():
     import asyncio
     app.state.reconciler = asyncio.create_task(_reconcile_loop())
+    from app.watcher import watch_loop
+    app.state.watcher = asyncio.create_task(watch_loop(app))
 
 
 @app.on_event("shutdown")
 async def _shutdown():
     # Graceful stop: pipelines close their sessions as "ended" and release
     # their leases instead of waiting for lease expiry.
-    reconciler = getattr(app.state, "reconciler", None)
-    if reconciler is not None:
-        reconciler.cancel()
+    for name in ("reconciler", "watcher"):
+        task = getattr(app.state, name, None)
+        if task is not None:
+            task.cancel()
     tm = getattr(app.state, "task_manager", None)
     if tm is not None:
         await tm.stop_all()

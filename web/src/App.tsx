@@ -49,6 +49,7 @@ type SessionInfo = {
   source: string;
   status: string;
   title: string | null;
+  category: string | null;
   started_at: string | null;
   last_error: string | null;
 };
@@ -125,6 +126,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [recapBusy, setRecapBusy] = useState(false);
+  const [finalSummary, setFinalSummary] = useState<string | null>(null);
   const userPicked = useRef(false);
   const baseKey = useRef("");
   const transcriptEnd = useRef<HTMLDivElement>(null);
@@ -220,6 +222,7 @@ export default function App() {
     setVoted(null);
     setLines([]);
     setError(null);
+    setFinalSummary(null);
     loadRolling(sid);
     checkNew(sid);
     api<Segment[]>(`/sessions/${sid}/transcript?limit=200`)
@@ -273,6 +276,19 @@ export default function App() {
   };
 
   const live = current !== null && RUNNING.includes(current.status);
+  const hasCurrent = current !== null;
+
+  // The wrap-up is written shortly after a session ends; refresh until it exists.
+  useEffect(() => {
+    if (sessionId === null || live || !hasCurrent || finalSummary) return;
+    const sid = sessionId;
+    const load = () => api<{ final_summary: string | null }>(`/sessions/${sid}`)
+      .then((j) => j.final_summary && setFinalSummary(clean(j.final_summary)))
+      .catch(() => {});
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => window.clearInterval(t);
+  }, [sessionId, live, hasCurrent, finalSummary]);
 
   return (
     <div style={{ fontFamily: "Geist, system-ui, sans-serif", padding: 24, maxWidth: 900 }}>
@@ -300,6 +316,12 @@ export default function App() {
             {live ? (connected ? "● Live" : "○ Reconnecting…") : `Session ${current.status}`}
           </span>
         )}
+        {current && (current.title || current.category) && (
+          <span style={{ fontSize: 13, color: "#374151" }}>
+            {current.title}{current.title && current.category ? " · " : ""}
+            {current.category && <em>{current.category}</em>}
+          </span>
+        )}
       </div>
       {(error || current?.last_error) && (
         <div role="alert" style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca",
@@ -312,6 +334,12 @@ export default function App() {
         <p>No sessions yet. Start a monitor or replay from the API to see live summaries here.</p>
       ) : (
         <>
+          {finalSummary && (
+            <section style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: "12px 20px", marginBottom: 16 }}>
+              <h2 style={{ fontSize: 17, margin: "4px 0 8px" }}>Stream wrap-up</h2>
+              <p style={{ fontSize: 15, lineHeight: 1.55, whiteSpace: "pre-wrap", margin: 0 }}>{finalSummary}</p>
+            </section>
+          )}
           <section style={{ background: "#22252c", color: "#f2f3f5", borderRadius: 14, padding: "16px 20px", marginBottom: 16, boxShadow: "0 10px 32px rgba(0,0,0,.5)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span>☰</span>

@@ -33,6 +33,20 @@ multiple uvicorn workers never start duplicate monitors for one channel, a stop
 request reaches whichever worker owns the monitor, and sessions left `live` by a
 crashed process are closed as `interrupted` on startup or once the lease expires.
 
+Auto-monitor: opt a channel in and a monitor starts when it goes live:
+
+```bash
+curl -X PUT -H "Authorization: Bearer $API_BEARER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"enabled": true}' http://localhost:8000/api/v1/channels/1/auto-monitor
+```
+
+Live checks run every `AUTO_MONITOR_POLL_SECONDS` (60) via the Twitch API when
+`TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET` are set (adds stream title/category), or
+`streamlink --json` otherwise. With neither available, auto-monitor logs a warning and
+stays off. A session ends after `SESSION_END_OFFLINE_MINUTES` (5) without audio; the
+next go-live starts a new session. Finished sessions get an end-of-stream wrap-up
+(`final_summary`, shown in the UI) a minute or so after they end.
+
 GPU prod: `docker compose -f docker-compose.yml -f deploy/docker-compose.gpu.yml up --build`
 Hosted ASR: `cp deploy/hosted.env .env`, then set `HOSTED_ASR_URL` and
 `HOSTED_ASR_API_KEY` for an OpenAI-compatible transcription endpoint.

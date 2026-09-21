@@ -33,7 +33,7 @@ This copy addresses the September 21, 2026 code audit findings.
 ## Verification
 
 - `pip install -e ".[dev]"`: passed
-- `pytest -q`: 84 passed (latest run; see Crash recovery below)
+- `pytest -q`: 93 passed (latest run; see Auto-monitor below)
 - `ruff check app eval tests`: passed
 - Python bytecode compilation: passed
 - Frontend production build: passed
@@ -86,4 +86,19 @@ not installed on the audit machine.
   only as a slow fallback.
 - HTTP errors are surfaced in the UI, a 401 re-prompts for the token, and pipeline errors
   and session `last_error` are shown.
+
+## Auto-monitor and end-of-stream summaries
+
+- Channels opt in with `PUT /channels/{id}/auto-monitor` (or `auto_monitor=true` on create).
+- A watcher checks opted-in channels every `AUTO_MONITOR_POLL_SECONDS` and starts a monitor
+  when one goes live. It uses the Twitch API (batched `GET /streams`, token refresh on 401)
+  when credentials exist, otherwise `streamlink --json`; a failed check changes nothing.
+- Only one worker polls (it holds a `watcher` lease); starts go through the per-channel lease,
+  so auto and manual starts never duplicate.
+- Stream id, title and category are stored on the session; changes append to `meta_history`.
+- A channel whose last session ended without capturing speech is not restarted for
+  `AUTO_MONITOR_RESTART_COOLDOWN_MINUTES`, preventing a restart loop when ingest is broken.
+- Ended and interrupted sessions with events get a `final_summary` (also saved as a `final`
+  summary row), generated off the shutdown path with up to 3 attempts and budget checks.
+- The UI shows stream title/category and the wrap-up for finished sessions.
 
