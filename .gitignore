@@ -1,0 +1,27 @@
+# secrets — never commit (see .env.example for the template)
+.env
+*.key
+*.pem
+
+# runtime data (SQLite DB, WAL, caches)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+/tmp/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# node / web build
+web/node_modules/
+web/dist/
+
+# os
+.DS_Store
