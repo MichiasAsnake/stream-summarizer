@@ -45,8 +45,11 @@ def write_extraction(db: SASession, channel_id: int, session_id: int, window_id:
             if th is None or th.channel_id != channel_id:
                 continue
         elif t.ref.startswith("NEW:"):
-            th = m.Thread(channel_id=channel_id, title=t.ref[4:], summary="",
-                          status="open", importance=3, last_updated_at=now)
+            # Titles are display text: normalize slugs so a model-emitted
+            # NEW:snake_case ref never surfaces with underscores.
+            th = m.Thread(channel_id=channel_id, title=t.ref[4:].replace("_", " "),
+                          summary="", status="open", importance=3,
+                          last_updated_at=now)
             db.add(th)
             db.flush()
         else:

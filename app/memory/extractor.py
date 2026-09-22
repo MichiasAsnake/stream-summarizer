@@ -83,8 +83,10 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
                 schema,
                 prompt + "\nYou returned an empty result. The transcript above contains speech: "
                 "write a grounded 1-2 sentence window_summary. Events, entity updates, thread "
-                "updates, and attributions may remain empty when nothing material or reliably "
-                "attributable occurred. Do not invent content to fill an array.",
+                "updates, and attributions may remain empty when the window is pure banter, "
+                "chat reading, ads, or technical chatter — but concrete in-world developments "
+                "(transactions, items/money, plans, scouting, conflicts) are events, even "
+                "routine ones. Do not invent content to fill an array.",
                 system=system)
             ext = Extraction.model_validate(raw)
     except Exception as first_exc:

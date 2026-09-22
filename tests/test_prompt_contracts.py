@@ -21,8 +21,8 @@ def _db():
 
 
 def test_extraction_prompt_allows_no_material_event_and_uses_neutral_pov():
-    assert "does NOT automatically contain a material event" in EXTRACTION_SYSTEM
-    assert "Leave events, entity_updates, and thread_updates empty" in EXTRACTION_SYSTEM
+    assert "routine progress counts" in EXTRACTION_SYSTEM
+    assert "Leave events empty only for pure banter" in EXTRACTION_SYSTEM
     assert "their involvement" in EXTRACTION_SYSTEM
     assert "his perspective" not in EXTRACTION_SYSTEM
     assert "Default to unknown" in EXTRACTION_SYSTEM

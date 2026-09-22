@@ -8,9 +8,10 @@ from app.pipeline import should_skip_window, triage_window
 
 
 def test_skip_rule_matrix():
-    # 1-based importance: skip idle (1) + minor (2) only
+    # 1-based importance: skip pure idle (1) only; minor logistics (2)
+    # goes to extraction because routine progress is emitted as events
     assert should_skip_window(1, False) is True
-    assert should_skip_window(2, False) is True
+    assert should_skip_window(2, False) is False
     assert should_skip_window(3, False) is False
     assert should_skip_window(5, False) is False
     assert should_skip_window(1, True) is False
@@ -21,7 +22,7 @@ def test_skip_rule_matrix():
 def test_skip_rule_confidence_gate():
     # low confidence takes the full path even when the score says idle
     assert should_skip_window(1, False, 0.9) is True
-    assert should_skip_window(2, False, 0.6) is True
+    assert should_skip_window(2, False, 0.6) is False
     assert should_skip_window(1, False, 0.59) is False
     assert should_skip_window(2, False, 0.0) is False
     assert should_skip_window(1, False, None) is False

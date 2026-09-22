@@ -47,6 +47,59 @@ class SentenceTransformerEmbedder:
         return vec
 
 
+class WespeakerResnetEmbedder:
+    """Speaker embeddings via WeSpeaker ResNet34-LM ONNX (raw waveform in).
+
+    ~26MB, 256-dim, Apache-2.0. Graph bakes fbank + masked pooling, so the
+    caller hands it 16kHz mono PCM; short clips are zero-padded with a
+    proportional validity mask. Stronger than ECAPA, esp. on short clips.
+    """
+    dim = 256
+    model_name = "wespeaker-resnet34-LM"
+    _repo = "talatapp/wespeaker-voxceleb-resnet34-LM-onnx"
+    _file = "wespeaker.onnx"
+    _rate = 16000
+    _max_samples = 160000
+    _mask_len = 589
+
+    def __init__(self):
+        self._sess = None
+
+    def _ensure(self):
+        if self._sess is None:
+            import onnxruntime as ort
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(self._repo, self._file)
+            self._sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        return self._sess
+
+    def _embed_window(self, pcm: np.ndarray) -> np.ndarray:
+        sess = self._ensure()
+        n = min(len(pcm), self._max_samples)
+        wav = np.zeros(self._max_samples, dtype="float32")
+        if n > 0:
+            wav[:n] = pcm[:n]
+        m = int(round(n / self._max_samples * self._mask_len)) if n > 0 else 0
+        mask = np.zeros((1, self._mask_len), dtype="float32")
+        if m > 0:
+            mask[0, :m] = 1.0
+        out = sess.run(["embedding"], {
+            "waveform": wav.reshape(1, -1), "mask": mask})[0]
+        v = np.asarray(out).reshape(-1).astype("float32")
+        return v / (np.linalg.norm(v) + 1e-9)
+
+    def embed(self, pcm: np.ndarray) -> np.ndarray:
+        pcm = np.asarray(pcm, dtype="float32").reshape(-1)
+        if pcm.size == 0 or not np.any(pcm):
+            return np.zeros(self.dim, dtype="float32")
+        if pcm.size <= self._max_samples:
+            return self._embed_window(pcm)
+        parts = [pcm[i:i + self._max_samples]
+                 for i in range(0, pcm.size, self._max_samples)]
+        vec = np.mean([self._embed_window(p) for p in parts], axis=0)
+        return (vec / (np.linalg.norm(vec) + 1e-9)).astype("float32")
+
+
 class EcapaEmbedder:
     dim = 192
     model_name = "speechbrain/spkrec-ecapa-voxceleb"
@@ -84,6 +137,11 @@ def get_embedder(model_name: str | None = None):
         return StubEmbedder()
     if "sentence-transformers" in name:
         return SentenceTransformerEmbedder()
+    if "wespeaker" in name or "resnet" in name:
+        try:
+            return WespeakerResnetEmbedder()
+        except Exception:
+            pass
     try:
         return EcapaEmbedder()
     except Exception:

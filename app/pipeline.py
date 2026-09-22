@@ -33,14 +33,15 @@ class PipelineConfig:
 
 def should_skip_window(importance: int | None, new_character: bool,
                        confidence: float | None = 1.0) -> bool:
-    """Pure triage rule: skip only low-importance, high-confidence windows
+    """Pure triage rule: skip only pure-idle, high-confidence windows
     with no new person. Importance is 1-based (Jev levels are 0-based, +1);
-    skipping <=2 drops idle banter and minor logistics. Low confidence (or
+    importance 2 (minor logistics) now goes to extraction because routine
+    in-world progress is emitted as events. Low confidence (or
     missing) takes the full path — confidence-gated per TypeSafe docs,
     fail-open by construction."""
     imp = importance if isinstance(importance, int) else 3
     conf = confidence if isinstance(confidence, (int, float)) else 0.0
-    return imp <= 2 and conf >= 0.6 and not new_character
+    return imp <= 1 and conf >= 0.6 and not new_character
 
 
 def triage_window(text: str, known_characters: list[dict] | None = None,

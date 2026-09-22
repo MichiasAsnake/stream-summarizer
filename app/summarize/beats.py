@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 PROMPT_VERSION = "beats-v1"
 HOUR = 3600
 CLOSE_GRACE = timedelta(minutes=3)  # let the hour's last window finish extracting
-LIVE_MIN_IMPORTANCE = 4
+LIVE_MIN_IMPORTANCE = 2
 LIVE_PER_HOUR = 3
 BEAT_MIN_IMPORTANCE = 3
 
@@ -191,8 +191,12 @@ def timeline(db: SASession, session_id: int) -> list[dict]:
     """Beats for hours that have them; top events for hours that don't yet."""
     beats = db.execute(select(m.PlotBeat).where(
         m.PlotBeat.session_id == session_id, m.PlotBeat.run_label == "live")).scalars().all()
+    # Only `done` hours suppress live highlights. A `skipped` run means "no
+    # notable events *yet*" — new events may arrive while the hour is open,
+    # so the open hour must keep showing its top events.
     runs = set(db.execute(select(m.BeatRun.hour_index).where(
-        m.BeatRun.session_id == session_id, m.BeatRun.run_label == "live")).scalars())
+        m.BeatRun.session_id == session_id, m.BeatRun.run_label == "live",
+        m.BeatRun.status == "done")).scalars())
     items = [{"at": b.t_start or 0.0, "clock": clock(b.t_start or 0.0), "hour": b.hour_index,
               "headline": b.headline, "significance": b.significance, "kind": "beat"}
              for b in beats]

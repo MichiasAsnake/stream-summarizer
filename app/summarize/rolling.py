@@ -17,7 +17,7 @@ def update_rolling(llm, prev: str, window_summary: str, events: list[str],
     # for — strip markdown fragments so the model doesn't copy the pattern.
     prev_clean = re.split(r"\*+", prev)[0].strip()
     prompt = f"Previous rolling summary:\n{prev_clean}\n\nNew window summary:\n{window_summary}\n\nNew events:\n" + "\n".join(events[:10])
-    text = llm.generate_text(prompt, system=prompts.ROLLING_SYSTEM, max_tokens=80)
+    text = llm.generate_text(prompt, system=prompts.ROLLING_SYSTEM, max_tokens=150)
     result = " ".join(text.split()[:30])
     return (result, prompt) if include_prompt else result
 
@@ -76,7 +76,7 @@ def build_recap(db: SASession, session_id: int, llm, max_words: int = 100,
     if fb and (neg >= 2 or (len(fb) <= 2 and neg == len(fb))):
         prompt += ("\n\nRecent readers found recaps hard to scan: use very short, "
                    "simple sentences and plain words.")
-    result = llm.generate_text(prompt, system=prompts.RECAP_SYSTEM, max_tokens=200)
+    result = llm.generate_text(prompt, system=prompts.RECAP_SYSTEM, max_tokens=350)
     return (result, prompt) if include_prompt else result
 
 

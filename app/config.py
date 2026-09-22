@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 60.0
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BACKOFF_SECONDS: float = 0.5
+    # Reasoning-effort passthrough for openai_compat only (e.g. "low" for
+    # Groq reasoning models). Empty = not sent (plain OpenAI-compatible APIs
+    # may reject the field, so this stays opt-in).
+    LLM_REASONING_EFFORT: str = ""
 
     # Pipeline ownership lease: renewed every TTL/3; a crashed worker's
     # sessions become recoverable once its lease expires.

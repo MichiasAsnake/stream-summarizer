@@ -31,7 +31,18 @@ def build_live_cmd(login: str) -> tuple[str, ...]:
     into shell source. The API validates its Twitch-login shape as a second
     layer of protection.
     """
-    return ("bash", "-o", "pipefail", "-c", LIVE_PIPELINE, "stream-summarizer", login)
+    pipeline = LIVE_PIPELINE
+    if os.environ.get("STREAMLINK_NO_PLAYLIST_PROXY") == "1":
+        # Bypass the ttvlol playlist proxy (e.g. when it is down) and pull
+        # upstream (ads included; extraction already treats ads as non-plot).
+        # Login shape is [A-Za-z0-9_]{3,25} per API validation, safe to embed.
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_]{3,25}", login):
+            raise ValueError(f"invalid Twitch login: {login!r}")
+        pipeline = pipeline.replace(
+            "streamlink --stdout",
+            f"streamlink --twitch-proxy-playlist-exclude {login} --stdout")
+    return ("bash", "-o", "pipefail", "-c", pipeline, "stream-summarizer", login)
 
 
 def build_replay_cmd(source: str) -> tuple[str, ...]:
