@@ -36,6 +36,24 @@ class GeminiLLM:
             http_options=types.HttpOptions(
                 timeout=max(1, int(settings.LLM_TIMEOUT_SECONDS * 1000))))
 
+    def _is_gemma(self) -> bool:
+        return "gemma" in (self.model or "").lower()
+
+    def _gen_config(self, max_tokens: int | None = None):
+        from google.genai import types  # type: ignore
+        # Gemma 4 rejects thinking_budget and defaults to thinking-on
+        # (76s on trivial prompts); MINIMAL drops it to <1s.
+        if self._is_gemma():
+            return types.GenerateContentConfig(
+                **({"max_output_tokens": max_tokens} if max_tokens else {}),
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.MINIMAL))
+        if max_tokens is not None:
+            return types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                thinking_config=types.ThinkingConfig(thinking_budget=0))
+        return None
+
     def generate_json(self, schema: dict[str, Any], prompt: str, system: str = "") -> dict[str, Any]:
         import json
 
@@ -51,9 +69,12 @@ class GeminiLLM:
             f"{json.dumps(schema)}\n\n"
             "Return ONLY the JSON object, no code fences, no commentary."
         )
+        cfg = self._gen_config()
         resp = call_llm(
             "extract",
-            lambda: c.models.generate_content(model=self.model, contents=contents))
+            lambda: c.models.generate_content(
+                model=self.model, contents=contents,
+                **({"config": cfg} if cfg else {})))
         text = resp.text or ""
         # strip code fences if the model wraps JSON
         if "```" in text:
@@ -63,22 +84,19 @@ class GeminiLLM:
         return json.loads(text)
 
     def generate_text(self, prompt: str, system: str = "", max_tokens: int = 500) -> str:
-        from google.genai import types  # type: ignore
-
         from app.observability import call_llm
         c = self._client()
         stage = "recap" if self.stage == "recap" else "rolling"
         # Short-form summaries must not spend the token budget on thinking:
         # a reasoning model otherwise burns max_output_tokens on thought
         # tokens and truncates to a fragment (observed: "Timeframe", "Scope").
-        thinking_off = types.ThinkingConfig(thinking_budget=0)
+        cfg = self._gen_config(max_tokens)
         resp = call_llm(
             stage,
             lambda: c.models.generate_content(
                 model=self.model,
                 contents=f"{system}\n\n{prompt}",
-                config=types.GenerateContentConfig(
-                    max_output_tokens=max_tokens, thinking_config=thinking_off)))
+                config=cfg))
         return resp.text or ""
 
 
