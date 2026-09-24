@@ -26,6 +26,8 @@ def test_extraction_prompt_allows_no_material_event_and_uses_neutral_pov():
     assert "their involvement" in EXTRACTION_SYSTEM
     assert "his perspective" not in EXTRACTION_SYSTEM
     assert "Default to unknown" in EXTRACTION_SYSTEM
+    assert "may mishear words" in EXTRACTION_SYSTEM
+    assert "NOT word/transcription accuracy" in EXTRACTION_SYSTEM
 
 
 def test_utterance_formatter_preserves_real_or_unknown_confidence():
@@ -63,3 +65,29 @@ def test_recap_prompt_is_chronological_and_marks_new_events():
     assert prompt.index("new event") < prompt.index("old event")
     assert "[NEW] [01:20 | importance 5 | reveal] new event" in prompt
     assert "If no entry is marked NEW" in prompt
+
+
+def test_full_summary_keeps_prior_history_when_events_move_out_of_window():
+    db = _db()
+    db.add(m.Summary(session_id=1, kind="full", text="The crew opened a shop.",
+                      cache_key="session-v4:1:1", created_at=datetime.now(UTC).isoformat()))
+    db.add(m.Event(id=2, session_id=1, t_start=80, type="reveal",
+                   description="They met a new customer", importance=3))
+    db.add(m.PlotBeat(session_id=1, hour_index=0, run_label="live",
+                      headline="The crew launched its shop", created_at=datetime.now(UTC).isoformat()))
+    db.commit()
+    seen = []
+
+    class StubLlm:
+        def generate_text(self, prompt, **kwargs):
+            seen.append((prompt, kwargs["system"]))
+            return "The crew opened a shop and met a new customer."
+
+    build_recap(db, 1, StubLlm(), full=True)
+    assert "The crew opened a shop." in seen[0][0]
+    assert "The crew launched its shop" in seen[0][0]
+    assert "entire stream so far" in seen[0][0]
+    assert "cumulative" in seen[0][1]
+    assert "If no entry is marked NEW" not in seen[0][0]
+    assert "distinct activities" in seen[0][0]
+    assert "only one activity" in seen[0][0]

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "xQc Stream Summary Peek",
+  "version": "0.1.0",
+  "description": "Click-to-reveal AI summary on xQc's Twitch sidebar hover card.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://*.twitch.tv/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.twitch.tv/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -487,10 +487,18 @@ async def run_session(cfg: PipelineConfig, db_factory, bus=None) -> None:
                             if skip_summary:
                                 new_text, rolling_prompt = "", ""
                             else:
+                                from app.memory.speaker_names import (
+                                    replace_known_speaker_ids,
+                                    speaker_names,
+                                )
+                                names = speaker_names(db3, cfg.channel_id)
                                 new_text, rolling_prompt = update_rolling(
-                                    llm, prev.text if prev else "",
-                                    (wdone.window_summary or "") if wdone else "",
-                                    [e.description for e in ev_rows], include_prompt=True)
+                                    llm, replace_known_speaker_ids(prev.text if prev else "", names),
+                                    replace_known_speaker_ids(
+                                        (wdone.window_summary or "") if wdone else "", names),
+                                    [replace_known_speaker_ids(e.description, names) for e in ev_rows],
+                                    include_prompt=True)
+                                new_text = replace_known_speaker_ids(new_text, names)
                             if new_text.strip():
                                 save_summary(db3, cfg.session_id, "rolling", new_text,
                                              t0=w.t_start, t1=w.t_end,

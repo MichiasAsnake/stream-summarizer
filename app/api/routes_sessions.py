@@ -89,12 +89,26 @@ def _recap_snapshot(db: SASession, sid: int) -> str:
     return f"{ev_max}:{th_max}"
 
 
+def _full_snapshot(db: SASession, sid: int) -> tuple[str, int]:
+    """Batch small developments; refresh immediately for a notable event.
+
+    The rolling update remains per-window. The cumulative overview changes on
+    its first event, every third event thereafter, or on any importance 3+ event.
+    """
+    count, notable_max = db.execute(select(
+        func.count(m.Event.id),
+        func.coalesce(func.max(m.Event.id).filter(m.Event.importance >= 3), 0),
+    ).where(m.Event.session_id == sid)).one()
+    return f"session-v4:{notable_max}:{1 + (count - 1) // 3 if count else 0}", count
+
+
 @router.get("/sessions/{sid}/recap-status")
 def recap_status(sid: int, db: SASession = Depends(get_db)):
     """Cheap poll target for the NEW badge: changes only when a click would
     return a freshly regenerated recap."""
     _require_session(db, sid)
-    return {"key": _recap_snapshot(db, sid)}
+    full_key, _ = _full_snapshot(db, sid)
+    return {"key": _recap_snapshot(db, sid), "full_key": full_key}
 
 
 @router.get("/sessions/{sid}/recap")
@@ -138,6 +152,75 @@ def get_recap(sid: int, db: SASession = Depends(get_db)):
     row.cache_key = key
     db.commit()
     return {"id": row.id, "text": fresh, "cached": False}
+
+
+@router.get("/sessions/{sid}/full-summary")
+def get_full_summary(sid: int, db: SASession = Depends(get_db)):
+    """Cumulative stream summary plus a separately cached compact preview."""
+    _require_session(db, sid)
+    # Versioned key invalidates older, over-detailed summaries. Its value is
+    # shared with the extension's status poll so minor events don't force rewrites.
+    key, event_count = _full_snapshot(db, sid)
+    if not event_count:
+        return {"id": None, "text": "", "preview": None, "cached": True}
+    cached = db.execute(select(m.Summary).where(m.Summary.session_id == sid,
+                                                m.Summary.kind == "full")
+                        .order_by(m.Summary.id.desc())).scalars().first()
+    if cached is not None and cached.cache_key == key:
+        return _full_with_preview(db, sid, cached, True)
+    from app.llm.budget import budget_status, should_skip_extraction
+    budget = budget_status(db, sid, datetime.now(UTC).strftime("%Y-%m"),
+                           settings.LLM_SESSION_BUDGET_USD, settings.LLM_MONTHLY_BUDGET_USD)
+    skip, reason = should_skip_extraction(budget)
+    if skip:
+        if cached is not None:
+            return {**_full_with_preview(db, sid, cached, True), "budget_limited": True}
+        raise HTTPException(429, reason)
+    try:
+        fresh, prompt = build_recap(db, sid, get_llm("recap"), max_words=200,
+                                    include_prompt=True, full=True)
+    except Exception as exc:
+        from app.observability import report_pipeline_error, set_session_error
+        report_pipeline_error("full-summary", exc)
+        set_session_error(db, sid, "full-summary", exc)
+        db.commit()
+        raise HTTPException(503, "full summary generation temporarily unavailable") from exc
+    from app.observability import clear_session_error
+    clear_session_error(db, sid, "full-summary")
+    row = save_summary(db, sid, "full", fresh, model=settings.LLM_MODEL_RECAP,
+                       input_text=prompt)
+    row.cache_key = key
+    db.commit()
+    return _full_with_preview(db, sid, row, False)
+
+
+def _full_with_preview(db: SASession, sid: int, full: m.Summary, cached: bool) -> dict:
+    """Preview failures never hide the detailed summary; callers can show it directly."""
+    preview = db.execute(select(m.Summary).where(m.Summary.session_id == sid,
+                                                 m.Summary.kind == "full-preview")
+                         .order_by(m.Summary.id.desc())).scalars().first()
+    if preview is not None and preview.cache_key == full.cache_key:
+        return {"id": full.id, "text": full.text, "preview": preview.text, "cached": cached}
+    from app.llm.budget import budget_status, should_skip_extraction
+    budget = budget_status(db, sid, datetime.now(UTC).strftime("%Y-%m"),
+                           settings.LLM_SESSION_BUDGET_USD, settings.LLM_MONTHLY_BUDGET_USD)
+    skip, _ = should_skip_extraction(budget)
+    if skip:
+        return {"id": full.id, "text": full.text, "preview": None, "cached": cached}
+    try:
+        from app.llm.prompts import COMPACT_SUMMARY_SYSTEM
+        compact = get_llm("recap").generate_text(full.text, system=COMPACT_SUMMARY_SYSTEM,
+                                                  max_tokens=160).strip()
+        if compact:
+            preview = save_summary(db, sid, "full-preview", compact,
+                                   model=settings.LLM_MODEL_RECAP, input_text=full.text)
+            preview.cache_key = full.cache_key
+            db.commit()
+            return {"id": full.id, "text": full.text, "preview": compact, "cached": cached}
+    except Exception as exc:
+        from app.observability import report_pipeline_error
+        report_pipeline_error("full-preview", exc)
+    return {"id": full.id, "text": full.text, "preview": None, "cached": cached}
 
 
 class FeedbackIn(BaseModel):

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session as SASession
 
 from app.db import models as m
@@ -202,3 +202,44 @@ async def start_replay(cid: int, request: Request, url: str = "", file: str = ""
         release(db, key, owner)
         raise
     return {"session_id": sid, "status": "replay-started"}
+
+
+@router.get("/channels/{login}/live-session")
+def get_live_session_by_login(login: str, db: SASession = Depends(get_db)):
+    """Resolve a twitch login to its current live session (for the extension)."""
+    ch = db.execute(
+        select(m.Channel).where(m.Channel.twitch_login == login.lower())
+    ).scalars().first()
+    if ch is None:
+        raise HTTPException(404, "channel not tracked")
+    session = db.execute(
+        select(m.Session)
+        .where(m.Session.channel_id == ch.id, m.Session.status == "live")
+        .order_by(m.Session.id.desc())
+    ).scalars().first()
+    if session is None:
+        raise HTTPException(404, "no live session")
+    return {"channel_id": ch.id, "session_id": session.id}
+
+
+@router.get("/channels/{login}/summary-session")
+def get_summary_session_by_login(login: str, db: SASession = Depends(get_db)):
+    """Current live session, or the latest saved live-stream summary when offline."""
+    ch = db.execute(select(m.Channel).where(
+        m.Channel.twitch_login == login.lower())).scalars().first()
+    if ch is None:
+        raise HTTPException(404, "channel not tracked")
+    live = db.execute(select(m.Session).where(
+        m.Session.channel_id == ch.id, m.Session.source == "live",
+        m.Session.status.in_(("live", "starting", "degraded")))
+        .order_by(m.Session.id.desc())).scalars().first()
+    if live is not None:
+        return {"channel_id": ch.id, "session_id": live.id, "live": True}
+    previous = db.execute(select(m.Session).where(
+        m.Session.channel_id == ch.id, m.Session.source == "live",
+        exists().where(m.Summary.session_id == m.Session.id,
+                       m.Summary.kind.in_(("rolling", "full"))))
+        .order_by(m.Session.id.desc())).scalars().first()
+    if previous is None:
+        raise HTTPException(404, "no stream summary available")
+    return {"channel_id": ch.id, "session_id": previous.id, "live": False}

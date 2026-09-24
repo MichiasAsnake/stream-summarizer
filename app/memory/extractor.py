@@ -11,6 +11,11 @@ from app.db import models as m
 from app.llm import prompts
 from app.llm.schemas import Extraction
 from app.memory.context import build_context
+from app.memory.speaker_names import (
+    label_utterances,
+    replace_known_speaker_ids,
+    speaker_names,
+)
 from app.memory.writer import write_extraction
 
 
@@ -63,10 +68,13 @@ def run_extraction(db: SASession, channel_id: int, session_id: int, window_id: i
         system = prompts.EXTRACTION_SYSTEM + "\n" + get_hint(profile)
     except Exception:
         system = prompts.EXTRACTION_SYSTEM
+    names = speaker_names(db, channel_id)
+    labeled = label_utterances(utterances, names)
     ctx = build_context(db, channel_id, session_id,
-                        [u.get("speaker", "?") for u in utterances],
-                        window_text=" ".join(u.get("text", "") for u in utterances))
-    prompt = f"<context>\n{ctx}\n</context>\n<transcript>\n{format_utterances(utterances)}\n</transcript>"
+                        [u.get("speaker", "?") for u in labeled],
+                        window_text=" ".join(u.get("text", "") for u in labeled))
+    ctx = replace_known_speaker_ids(ctx, names)
+    prompt = f"<context>\n{ctx}\n</context>\n<transcript>\n{format_utterances(labeled)}\n</transcript>"
     schema = Extraction.model_json_schema()
     t0 = time.time()
 
